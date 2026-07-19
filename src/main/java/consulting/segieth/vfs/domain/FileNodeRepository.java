@@ -53,6 +53,23 @@ public interface FileNodeRepository extends JpaRepository<FileNode, Long> {
     int countDirectChildren(@Param("system") String system,
                             @Param("parentAddress") String parentAddress);
 
+    /** Alle Dateien (nicht Verzeichnisse) unterhalb eines Pfades */
+    @Query("SELECT COUNT(f) FROM FileNode f WHERE f.system = :system " +
+           "AND f.address LIKE CONCAT(:parentAddress, '%') " +
+           "AND f.type <> 'directory' AND f.type <> 'system'")
+    long countFilesUnder(@Param("system") String system,
+                         @Param("parentAddress") String parentAddress);
+
+    /** Direkte Dateikinder (nicht Verzeichnisse) */
+    @Query("SELECT COUNT(f) FROM FileNode f WHERE f.system = :system " +
+           "AND f.address LIKE CONCAT(:parentAddress, '%') " +
+           "AND f.address <> :parentAddress " +
+           "AND f.type <> 'directory' AND f.type <> 'system' " +
+           "AND (LOCATE('\\', f.address, LENGTH(:parentAddress) + 2) = 0 " +
+           "     OR LOCATE('/', f.address, LENGTH(:parentAddress) + 2) = 0)")
+    long countDirectFiles(@Param("system") String system,
+                          @Param("parentAddress") String parentAddress);
+
     /** Alle Root-FileSystems (type = 'system') */
     List<FileNode> findAllByType(String type);
 

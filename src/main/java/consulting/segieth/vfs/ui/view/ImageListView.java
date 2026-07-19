@@ -32,7 +32,6 @@ import jakarta.annotation.security.PermitAll;
 
 @Route("imagelist")
 @PageTitle("Image List")
-@Menu(order = 0, icon = "vaadin:clipboard-check", title = "Image List")
 @PermitAll // When security is enabled, allow all authenticated users
 public class ImageListView extends VerticalLayout {
 

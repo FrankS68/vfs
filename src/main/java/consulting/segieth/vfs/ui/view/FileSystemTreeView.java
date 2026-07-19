@@ -37,6 +37,8 @@ import consulting.segieth.vfs.domain.ImageFile;
 import consulting.segieth.vfs.domain.Tag;
 import consulting.segieth.vfs.service.DuplicateService;
 import consulting.segieth.vfs.service.FileSystemService;
+import consulting.segieth.vfs.service.HashService;
+import consulting.segieth.vfs.service.ImageService;
 import consulting.segieth.vfs.service.MoveService;
 import consulting.segieth.vfs.service.ProcessLogger;
 import consulting.segieth.vfs.service.ProcessLogger.ProcessType;
@@ -49,7 +51,7 @@ import de.witchcafe.auth.AppUserInfo;
 import de.witchcafe.auth.CurrentUser;
 import jakarta.annotation.security.PermitAll;
 
-@Route("filesystem-tree")
+@Route("")
 @PageTitle("FileSystem Tree")
 @Menu(order = 1, icon = "vaadin:folder-open", title = "FileSystem Tree")
 @PreserveOnRefresh
@@ -65,18 +67,22 @@ public class FileSystemTreeView extends FileSystemView {
     private final HorizontalLayout multiActionBar;
     private final Span multiSelectionLabel;
     TreeGrid<VFSNode> fileSystemTree;
+    private VFSNode selectedNode = null; // beliebiger selektierter Knoten für Scan
 
     // Virtueller Tag-Root — einmalig erzeugt als Sentinel-Node
     private static final VFSNode TAG_ROOT = new VFSNode(null) {
-        @Override public String getName() { return "🏷 Tags"; }
+        @Override public String getName() { return "\uD83C\uDFF7 Tags"; }
         @Override public String getInfo() { return ""; }
         @Override public FileNode getFileNode() { return null; }
+        @Override public boolean equals(Object o) { return this == o; }
+        @Override public int hashCode() { return System.identityHashCode(this); }
     };
 
     public FileSystemTreeView(FileSystemService fsService, TreeService treeService,
                                DuplicateService duplicateService, MoveService moveService,
                                TagService tagService, CurrentUser currentUser,
-                               ProcessLogger processLogger) {
+                               ProcessLogger processLogger,
+                               ImageService imageService, HashService hashService) {
         super(fsService);
         this.treeService = treeService;
         this.duplicateService = duplicateService;
@@ -85,13 +91,100 @@ public class FileSystemTreeView extends FileSystemView {
         this.currentUser = currentUser;
         this.processLogger = processLogger;
 
-        Button refreshBtn = new Button("Aktualisieren", e -> refreshAll());
+        Button refreshBtn = new Button("Tree neu laden", new Icon(VaadinIcon.REFRESH));
         refreshBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY);
+        refreshBtn.getElement().setAttribute("title", "Tree aus der Datenbank neu laden (kein Dateisystem-Zugriff)");
+        refreshBtn.addClickListener(e -> refreshAll());
 
-        Button scanBtn = new Button("Scan", e -> scanSelected());
+        Button scanBtn = new Button("Verzeichnis scannen", new Icon(VaadinIcon.SEARCH));
         scanBtn.addThemeVariants(ButtonVariant.LUMO_PRIMARY);
+        scanBtn.getElement().setAttribute("title", "Ausgewähltes Verzeichnis vom Dateisystem einlesen und DB aktualisieren");
+        scanBtn.addClickListener(e -> scanSelected());
 
-        HorizontalLayout toolbar = new HorizontalLayout(refreshBtn, scanBtn);
+        Button newFsBtn = new Button(new Icon(VaadinIcon.PLUS));
+        newFsBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY);
+        newFsBtn.getElement().setAttribute("title", "Neues Dateisystem anlegen");
+        newFsBtn.addClickListener(e ->
+            new FileSystemDialog(fsService, null, () -> {
+                fileSystemTree.deselectAll();
+                fileSystemTree.getDataProvider().refreshAll();
+            }).open());
+
+        Button editFsBtn = new Button(new Icon(VaadinIcon.EDIT));
+        editFsBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY);
+        editFsBtn.getElement().setAttribute("title", "Ausgewähltes Dateisystem bearbeiten");
+        editFsBtn.addClickListener(e -> {
+            if (selectedFileSystem != null && "system".equals(selectedFileSystem.getType())) {
+                new FileSystemDialog(fsService, selectedFileSystem, () -> {
+                    fileSystemTree.deselectAll();
+                    selectedFileSystem = null;
+                    selectedNode = null;
+                    fileSystemTree.getDataProvider().refreshAll();
+                }).open();
+            } else {
+                Notification.show("Bitte ein Root-Dateisystem auswählen", 2000, Notification.Position.BOTTOM_START);
+            }
+        });
+
+        Button deleteFsBtn = new Button(new Icon(VaadinIcon.TRASH));
+        deleteFsBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY, ButtonVariant.LUMO_ERROR);
+        deleteFsBtn.getElement().setAttribute("title", "Ausgewähltes Dateisystem löschen");
+        deleteFsBtn.addClickListener(e -> {
+            if (selectedFileSystem != null && "system".equals(selectedFileSystem.getType())) {
+                fsService.delete(selectedFileSystem);
+                fileSystemTree.getDataProvider().refreshAll();
+                Notification.show("Dateisystem gelöscht", 2000, Notification.Position.BOTTOM_START);
+            } else {
+                Notification.show("Bitte ein Root-Dateisystem auswählen", 2000, Notification.Position.BOTTOM_START);
+            }
+        });
+
+        // Thumbnails + Hashes
+        Button thumbnailBtn = new Button(new Icon(VaadinIcon.PICTURE));
+        thumbnailBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY);
+        thumbnailBtn.getElement().setAttribute("title", "Thumbnails generieren");
+        thumbnailBtn.addClickListener(e -> {
+            thumbnailBtn.setEnabled(false);
+            UI ui = UI.getCurrent();
+            Notification.show("Thumbnails werden generiert...", 2000, Notification.Position.TOP_END);
+            Thread thread = new Thread(() -> {
+                imageService.generateMissingThumbnails((done, total) -> {});
+                ui.access(() -> {
+                    thumbnailBtn.setEnabled(true);
+                    Notification.show("Thumbnails fertig!", 3000, Notification.Position.TOP_END)
+                            .addThemeVariants(NotificationVariant.LUMO_SUCCESS);
+                });
+            });
+            thread.start();
+        });
+
+        Button hashBtn = new Button(new Icon(VaadinIcon.HASH));
+        hashBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY);
+        hashBtn.getElement().setAttribute("title", "Hashes berechnen (für Duplikat-Erkennung)");
+        hashBtn.addClickListener(e -> {
+            hashBtn.setEnabled(false);
+            UI ui = UI.getCurrent();
+            Notification.show("Hashes werden berechnet...", 2000, Notification.Position.TOP_END);
+            Thread thread = new Thread(() -> {
+                hashService.computeMissingHashes((done, total) -> {});
+                ui.access(() -> {
+                    hashBtn.setEnabled(true);
+                    treeService.invalidateDuplicateCache();
+                    fileSystemTree.getDataProvider().refreshAll();
+                    Notification.show("Hashes fertig!", 3000, Notification.Position.TOP_END)
+                            .addThemeVariants(NotificationVariant.LUMO_SUCCESS);
+                });
+            });
+            thread.start();
+        });
+
+        HorizontalLayout toolbar = new HorizontalLayout(
+                refreshBtn, scanBtn,
+                new com.vaadin.flow.component.html.Span(" | "),
+                newFsBtn, editFsBtn, deleteFsBtn,
+                new com.vaadin.flow.component.html.Span(" | "),
+                thumbnailBtn, hashBtn);
+        toolbar.setDefaultVerticalComponentAlignment(Alignment.CENTER);
         toolbar.setPadding(false);
 
         // Multi-Aktionsleiste
@@ -283,6 +376,17 @@ public class FileSystemTreeView extends FileSystemView {
                 });
                 actions.add(newSubTagBtn);
 
+                // Öffentlich/Privat Toggle
+                boolean isPublic = tn.getTag().isPublic();
+                Button visibilityBtn = new Button(isPublic ? VaadinIcon.GLOBE.create() : VaadinIcon.LOCK.create());
+                visibilityBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY, ButtonVariant.LUMO_SMALL);
+                visibilityBtn.getElement().setAttribute("title", isPublic ? "Auf privat setzen" : "Veröffentlichen");
+                visibilityBtn.addClickListener(e -> {
+                    tagService.setPublic(tn.getTag(), !tn.getTag().isPublic());
+                    fileSystemTree.getDataProvider().refreshAll();
+                });
+                actions.add(visibilityBtn);
+
                 Button deleteTagBtn = new Button(VaadinIcon.TRASH.create());
                 deleteTagBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY, ButtonVariant.LUMO_ERROR, ButtonVariant.LUMO_SMALL);
                 deleteTagBtn.getElement().setAttribute("title", "Tag löschen");
@@ -350,10 +454,16 @@ public class FileSystemTreeView extends FileSystemView {
             multiSelectionLabel.setText(sel.size() + " ausgewählt");
             if (sel.size() == 1) {
                 sel.stream().findFirst().ifPresent(node -> {
-                    if (node.getFileNode() instanceof consulting.segieth.vfs.domain.FileSystem fs) {
+                    selectedNode = node;
+                    if (node.getFileNode() instanceof consulting.segieth.vfs.domain.FileSystem fs
+                            && "system".equals(fs.getType())) {
                         selectedFileSystem = fs;
+                    } else {
+                        selectedFileSystem = null;
                     }
                 });
+            } else {
+                selectedNode = null;
             }
         });
 
@@ -389,7 +499,7 @@ public class FileSystemTreeView extends FileSystemView {
                         2000, Notification.Position.BOTTOM_START);
             }));
 
-        contextMenu.addItem("Scan", event -> event.getItem().ifPresent(node -> {
+        contextMenu.addItem("Vom Dateisystem scannen", event -> event.getItem().ifPresent(node -> {
             if (node == TAG_ROOT || node instanceof TagNode || node.getFileNode() == null) return;
             if (!(node.getFileNode() instanceof ImageFile)) {
                 UI ui = UI.getCurrent();
@@ -414,7 +524,13 @@ public class FileSystemTreeView extends FileSystemView {
 
         contextMenu.addItem("Duplikate anzeigen", event ->
             event.getItem().filter(n -> n != TAG_ROOT && !(n instanceof TagNode) && n.isHasDuplicate())
-                 .ifPresent(n -> showDuplicateDialog(n.getFileNode())));
+                 .ifPresent(n -> {
+                     if (n.getFileNode().getContentHash() != null) {
+                         showDuplicateDialog(n.getFileNode());
+                     } else {
+                         showDuplicatesForFolder(n.getFileNode().getSystem(), n.getFileNode().getAddress());
+                     }
+                 }));
 
         contextMenu.addItem("Tags bearbeiten", event ->
             event.getItem().filter(n -> n != TAG_ROOT && !(n instanceof TagNode) && n.getFileNode() != null)
@@ -464,6 +580,67 @@ public class FileSystemTreeView extends FileSystemView {
         @Override public String getName() { return (tag.isPublic() ? "🌐 " : "🔒 ") + tag.getName(); }
         @Override public String getInfo() { return tag.getFullPath(); }
         @Override public FileNode getFileNode() { return null; }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof TagNode other)) return false;
+            return tag.getId() != null && tag.getId().equals(other.tag.getId());
+        }
+
+        @Override
+        public int hashCode() {
+            return tag.getId() != null ? tag.getId().hashCode() : System.identityHashCode(this);
+        }
+    }
+
+    private void showDuplicatesForFolder(String system, String folderAddress) {
+        Map<String, List<FileNode>> allGroups = duplicateService.findDuplicateGroups();
+
+        // Nur Gruppen wo mindestens eine Datei unter diesem Ordner liegt
+        String prefix = folderAddress.endsWith("\\") || folderAddress.endsWith("/")
+                ? folderAddress : folderAddress + "\\";
+        Map<String, List<FileNode>> relevantGroups = new java.util.LinkedHashMap<>();
+        for (Map.Entry<String, List<FileNode>> entry : allGroups.entrySet()) {
+            boolean hasFileInFolder = entry.getValue().stream()
+                    .anyMatch(fn -> fn.getAddress().startsWith(prefix));
+            if (hasFileInFolder) relevantGroups.put(entry.getKey(), entry.getValue());
+        }
+
+        if (relevantGroups.isEmpty()) {
+            Notification.show("Keine Duplikate unter diesem Ordner",
+                    3000, Notification.Position.TOP_CENTER);
+            return;
+        }
+
+        Dialog dialog = new Dialog();
+        dialog.setWidth("700px");
+        dialog.setDraggable(true);
+
+        HorizontalLayout header = new HorizontalLayout();
+        header.setWidthFull();
+        header.setJustifyContentMode(JustifyContentMode.BETWEEN);
+        header.setDefaultVerticalComponentAlignment(Alignment.CENTER);
+        Span title = new Span("Duplikate unter '" + folderAddress + "' — " + relevantGroups.size() + " Gruppen");
+        title.getStyle().set("font-weight", "bold").set("font-size", "1.1em");
+        Button closeBtn = new Button(new Icon(VaadinIcon.CLOSE), e -> dialog.close());
+        closeBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY);
+        header.add(title, closeBtn);
+
+        VerticalLayout content = new VerticalLayout(header);
+        content.setPadding(false);
+        content.setSpacing(true);
+
+        for (List<FileNode> group : relevantGroups.values()) {
+            List<FileNode> remaining = new ArrayList<>(group);
+            for (FileNode node : group) {
+                content.add(buildDialogRow(node, remaining, content, dialog));
+            }
+            content.add(new com.vaadin.flow.component.html.Hr());
+        }
+
+        dialog.add(content);
+        dialog.open();
     }
 
     private void showDuplicatesForTag(TagNode tn) {
@@ -607,15 +784,15 @@ public class FileSystemTreeView extends FileSystemView {
     }
 
     private void scanSelected() {
-        if (selectedFileSystem != null) {
+        FileNode target = selectedNode != null ? selectedNode.getFileNode() : null;
+        if (target != null && !target.getType().equals("file") && !(target instanceof ImageFile)) {
             UI ui = UI.getCurrent();
-            ProcessLogger.ProcessHandle handle = processLogger.start(ui, ProcessType.SCAN, selectedFileSystem.getAddress());
+            ProcessLogger.ProcessHandle handle = processLogger.start(ui, ProcessType.SCAN, target.getAddress());
             Thread thread = new Thread(() -> {
                 try {
-                    fsService.scanSync(selectedFileSystem);
+                    fsService.scanSync(target);
                     ui.access(() -> {
-                        fileSystemTree.getSelectedItems().stream().findFirst().ifPresent(node ->
-                            fileSystemTree.getDataProvider().refreshItem(node, true));
+                        fileSystemTree.getDataProvider().refreshItem(selectedNode, true);
                         handle.success("Scan abgeschlossen");
                     });
                 } catch (NoSuchFileException e) {
@@ -626,7 +803,7 @@ public class FileSystemTreeView extends FileSystemView {
             });
             thread.start();
         } else {
-            Notification.show("Kein Verzeichnis ausgewählt", 2000, Notification.Position.BOTTOM_START);
+            Notification.show("Bitte ein Verzeichnis auswählen", 2000, Notification.Position.BOTTOM_START);
         }
     }
 

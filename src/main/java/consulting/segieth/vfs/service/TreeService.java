@@ -93,7 +93,33 @@ public class TreeService {
     }
 
     private VFSNode toNode(FileNode fn) {
-        VFSNode node = fn instanceof ImageFile ? new ImageNode((ImageFile) fn) : new VFSNode(fn);
+        VFSNode node = fn instanceof ImageFile ? new ImageNode((ImageFile) fn) : new VFSNode(fn) {
+            @Override
+            public String getInfo() {
+                String addr = normalizeAddress(fn.getAddress());
+                if (fn.getType().equals("system")) {
+                    // Speicherplatz vom Dateisystem
+                    try {
+                        java.nio.file.FileStore store = java.nio.file.Files.getFileStore(
+                                java.nio.file.Paths.get(fn.getAddress()));
+                        long total = store.getTotalSpace();
+                        long free  = store.getUsableSpace();
+                        long used  = total - free;
+                        return formatBytes(used) + " / " + formatBytes(total)
+                                + " (" + formatBytes(free) + " frei)";
+                    } catch (Exception e) {
+                        return "#" + fn.getId();
+                    }
+                } else if (fn.getType().equals("directory")) {
+                    long direct = fileNodeRepository.countDirectFiles(fn.getSystem(), addr);
+                    long total  = fileNodeRepository.countFilesUnder(fn.getSystem(), addr);
+                    if (total == 0) return "leer";
+                    if (direct == total) return direct + " Dateien";
+                    return direct + " / " + total + " Dateien (inkl. Unterordner)";
+                }
+                return "#" + fn.getId();
+            }
+        };
         // Direkt Duplikat
         if (fn.getContentHash() != null && getDuplicateHashes().contains(fn.getContentHash())) {
             node.setHasDuplicate(true);
@@ -121,5 +147,12 @@ public class TreeService {
         if (address.endsWith("\\") || address.endsWith("/")) return address;
         // Windows oder Unix?
         return address.contains("\\") ? address + "\\" : address + "/";
+    }
+
+    private String formatBytes(long bytes) {
+        if (bytes < 1024) return bytes + " B";
+        if (bytes < 1024 * 1024) return String.format("%.1f KB", bytes / 1024.0);
+        if (bytes < 1024L * 1024 * 1024) return String.format("%.1f MB", bytes / (1024.0 * 1024));
+        return String.format("%.2f GB", bytes / (1024.0 * 1024 * 1024));
     }
 }

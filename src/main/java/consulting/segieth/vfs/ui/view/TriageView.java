@@ -41,7 +41,6 @@ import jakarta.annotation.security.PermitAll;
 
 @Route("triage")
 @PageTitle("Triage")
-@Menu(order = 4, icon = "vaadin:flag", title = "Triage")
 @PermitAll
 public class TriageView extends VerticalLayout implements BeforeEnterObserver {
 

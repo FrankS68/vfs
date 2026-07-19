@@ -23,7 +23,6 @@ import jakarta.annotation.security.PermitAll;
 
 @Route("duplicates")
 @PageTitle("Duplikate")
-@Menu(order = 3, icon = "vaadin:copy", title = "Duplikate")
 @PermitAll
 public class DuplicateView extends VerticalLayout {
 

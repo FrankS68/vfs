@@ -130,12 +130,19 @@ public class FileSystemService {
         if ("fail".equals(description)) {
             throw new RuntimeException("This is for testing the error handler");
         }
-        var fileSystem = new FileSystem(system, address, name);
-        fileSystem.setId(id);
-        fileSystem.setDescription(description);
+        var fileSystem = fileSystemRepository.findById(id).orElse(new FileSystem(system, address, name));
+        fileSystem.setName(name);
+        fileSystem.setAddress(address);
+        fileSystem.setDescription(description != null ? description : "");
         fileSystem.setTrashPath(trashPath != null && !trashPath.isBlank() ? trashPath : null);
         fileSystem.setSynchDate(LocalDate.now());
+        if (fileSystem.getType() == null) fileSystem.setType("system");
         fileSystemRepository.saveAndFlush(fileSystem);
+    }
+
+    @Transactional
+    public void delete(FileSystem fileSystem) {
+        fileSystemRepository.delete(fileSystem);
     }
 
     @Transactional(readOnly = true)

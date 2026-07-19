@@ -38,6 +38,7 @@ import com.vaadin.flow.router.Route;
 import com.vaadin.flow.server.StreamResource;
 
 import consulting.segieth.vfs.domain.ImageFile;
+import consulting.segieth.vfs.domain.TagRepository;
 import consulting.segieth.vfs.service.DuplicateService;
 import consulting.segieth.vfs.service.ImageService;
 import consulting.segieth.vfs.service.MoveService;
@@ -49,7 +50,6 @@ import jakarta.annotation.security.PermitAll;
 
 @Route("gallery")
 @PageTitle("Gallery")
-@Menu(order = 0, icon = "vaadin:clipboard-check", title = "Gallery")
 @PermitAll
 public class GalleryView extends VerticalLayout implements BeforeEnterObserver {
 
@@ -60,6 +60,7 @@ public class GalleryView extends VerticalLayout implements BeforeEnterObserver {
     private final CurrentUser currentUser;
     private final MoveService moveService;
     private final TreeService treeService;
+    private final TagRepository tagRepository;
 
     private final FlexLayout imageContainer;
     private final TextField searchField;
@@ -76,6 +77,8 @@ public class GalleryView extends VerticalLayout implements BeforeEnterObserver {
 
     // Selektion
     private final Set<ImageFile> selected = new LinkedHashSet<>();
+    // Alle bisher geladenen Bilder in Reihenfolge
+    private final List<ImageFile> loadedImages = new ArrayList<>();
 
     public static void openForFolder(UI ui, String folderAddress) {
         ui.navigate("gallery", QueryParameters.of("folder",
@@ -94,7 +97,10 @@ public class GalleryView extends VerticalLayout implements BeforeEnterObserver {
         } else if (params.containsKey("tag") && !params.get("tag").isEmpty()) {
             tagFilter = Long.parseLong(params.get("tag").get(0));
             folderFilter = null;
-            folderBanner.setText("Tag: #" + tagFilter);
+            String tagName = tagRepository.findById(tagFilter)
+                    .map(t -> t.getFullPath())
+                    .orElse("#" + tagFilter);
+            folderBanner.setText("Tag: " + tagName);
             folderBanner.setVisible(true);
         } else {
             folderFilter = null;
@@ -105,12 +111,13 @@ public class GalleryView extends VerticalLayout implements BeforeEnterObserver {
     }
 
     public GalleryView(ImageService service, TagService tagService, CurrentUser currentUser,
-                       MoveService moveService, TreeService treeService) {
+                       MoveService moveService, TreeService treeService, TagRepository tagRepository) {
         this.service = service;
         this.tagService = tagService;
         this.currentUser = currentUser;
         this.moveService = moveService;
         this.treeService = treeService;
+        this.tagRepository = tagRepository;
 
         // Folder-Banner
         folderBanner = new Span();
@@ -198,6 +205,7 @@ public class GalleryView extends VerticalLayout implements BeforeEnterObserver {
         currentPage = 0;
         hasMore = true;
         selected.clear();
+        loadedImages.clear();
         updateSelectionBar();
         imageContainer.removeAll();
         loadNextPage();
@@ -219,7 +227,10 @@ public class GalleryView extends VerticalLayout implements BeforeEnterObserver {
                     ? service.findByFolder(folder, PageRequest.of(page, PAGE_SIZE))
                     : service.findImages(query, PageRequest.of(page, PAGE_SIZE));
             ui.access(() -> {
-                slice.getContent().forEach(image -> imageContainer.add(createImageCard(image)));
+                slice.getContent().forEach(image -> {
+                    loadedImages.add(image);
+                    imageContainer.add(createImageCard(image));
+                });
                 hasMore = slice.hasNext();
                 currentPage++;
                 loading = false;
@@ -306,8 +317,8 @@ public class GalleryView extends VerticalLayout implements BeforeEnterObserver {
                 .set("text-overflow", "ellipsis");
 
         // Klick auf Bild öffnet Dialog (nicht Checkbox oder Tag-Button)
-        img.addClickListener(e -> showImageDialog(image));
-        label.addClickListener(e -> showImageDialog(image));
+        img.addClickListener(e -> showImageDialog(image, getCurrentImages()));
+        label.addClickListener(e -> showImageDialog(image, getCurrentImages()));
 
         card.add(selectCb, tagBtn, img, label);
         return card;
@@ -360,71 +371,59 @@ public class GalleryView extends VerticalLayout implements BeforeEnterObserver {
         }).open();
     }
 
-    private void showImageDialog(ImageFile image) {
+    private List<ImageFile> getCurrentImages() {
+        return new ArrayList<>(loadedImages);
+    }
+
+    private void showImageDialog(ImageFile image, List<ImageFile> images) {
+        int idx = images.indexOf(image);
+        showImageDialogAt(images, idx < 0 ? 0 : idx);
+    }
+
+    private void showImageDialogAt(List<ImageFile> images, int startIndex) {
+        // Wrapper damit Lambda den Index ändern kann
+        int[] currentIdx = {startIndex};
+
         Dialog dialog = new Dialog();
         dialog.setWidth("90vw");
         dialog.setHeight("90vh");
         dialog.setDraggable(true);
         dialog.setResizable(true);
 
-        Span title = new Span(image.getName());
-        title.getStyle().set("font-weight", "bold").set("font-size", "1.1em");
-        Button closeBtn = new Button(new Icon(VaadinIcon.CLOSE), e -> dialog.close());
-        closeBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY);
-        HorizontalLayout header = new HorizontalLayout(title, closeBtn);
-        header.setWidthFull();
-        header.setJustifyContentMode(JustifyContentMode.BETWEEN);
-        header.setDefaultVerticalComponentAlignment(Alignment.CENTER);
-
-        Image fullImg;
-        if (image.hasThumbnail()) {
-            StreamResource thumbResource = new StreamResource(image.getName(),
-                    () -> new ByteArrayInputStream(image.getThumbnail()));
-            fullImg = new Image(thumbResource, image.getName());
-        } else {
-            fullImg = new Image("icons/icon.png", image.getName());
-        }
+        // Bild
+        Image fullImg = new Image();
         fullImg.setMaxWidth("100%");
-        fullImg.setMaxHeight("calc(90vh - 120px)");
+        fullImg.setMaxHeight("calc(90vh - 140px)");
         fullImg.getStyle().set("object-fit", "contain").set("display", "block").set("margin", "auto");
 
-        UI ui = UI.getCurrent();
-        Thread thread = new Thread(() -> {
-            try {
-                java.io.File file = image.getPath().toFile();
-                if (file.exists() && file.canRead()) {
-                    StreamResource orig = new StreamResource(image.getName(),
-                            () -> { try { return new java.io.FileInputStream(file); }
-                                    catch (Exception ex) { return new ByteArrayInputStream(new byte[0]); } });
-                    ui.access(() -> fullImg.setSrc(orig));
-                }
-            } catch (Exception ignored) {}
-        });
-        thread.start();
+        Span titleSpan = new Span();
+        titleSpan.getStyle().set("font-weight", "bold").set("font-size", "1.1em");
 
-        Span pathInfo = new Span(image.getAddress());
+        Span counterSpan = new Span();
+        counterSpan.getStyle().set("color", "gray").set("font-size", "0.85em");
+
+        Span pathInfo = new Span();
         pathInfo.getStyle().set("font-size", "0.8em").set("color", "gray");
 
-        // Tags anzeigen + Tag-Button im Dialog
-        AppUserInfo user = currentUser.require();
-        List<consulting.segieth.vfs.domain.Tag> tags = tagService.getTagsForNode(image);
         HorizontalLayout tagRow = new HorizontalLayout();
         tagRow.setDefaultVerticalComponentAlignment(Alignment.CENTER);
         tagRow.getStyle().set("flex-wrap", "wrap").set("gap", "6px");
-        tags.forEach(t -> {
-            Span chip = new Span(t.getFullPath());
-            chip.getStyle()
-                    .set("background", "var(--lumo-primary-color-10pct)")
-                    .set("color", "var(--lumo-primary-text-color)")
-                    .set("padding", "2px 8px")
-                    .set("border-radius", "12px")
-                    .set("font-size", "0.8em");
-            tagRow.add(chip);
-        });
-        Button editTagsBtn = new Button("🏷 Tags bearbeiten", e ->
-            new TagDialog(List.<consulting.segieth.vfs.domain.FileNode>of(image), tagService, user, () -> {}).open());
-        editTagsBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY, ButtonVariant.LUMO_SMALL);
-        tagRow.add(editTagsBtn);
+
+        Button closeBtn = new Button(new Icon(VaadinIcon.CLOSE), e -> dialog.close());
+        closeBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY);
+
+        Button prevBtn = new Button(new Icon(VaadinIcon.ARROW_LEFT));
+        prevBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY);
+        prevBtn.addClickShortcut(com.vaadin.flow.component.Key.ARROW_LEFT);
+
+        Button nextBtn = new Button(new Icon(VaadinIcon.ARROW_RIGHT));
+        nextBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY);
+        nextBtn.addClickShortcut(com.vaadin.flow.component.Key.ARROW_RIGHT);
+
+        HorizontalLayout header = new HorizontalLayout(prevBtn, titleSpan, counterSpan, nextBtn, closeBtn);
+        header.setWidthFull();
+        header.setDefaultVerticalComponentAlignment(Alignment.CENTER);
+        header.expand(titleSpan);
 
         Div imgWrapper = new Div(fullImg);
         imgWrapper.setWidthFull();
@@ -435,8 +434,74 @@ public class GalleryView extends VerticalLayout implements BeforeEnterObserver {
         content.setPadding(false);
         content.setSpacing(false);
         content.expand(imgWrapper);
-
         dialog.add(content);
+
+        // Bild laden
+        Runnable loadImage = () -> {
+            ImageFile current = images.get(currentIdx[0]);
+            titleSpan.setText(current.getName());
+            counterSpan.setText((currentIdx[0] + 1) + " / " + images.size());
+            pathInfo.setText(current.getAddress());
+            prevBtn.setEnabled(currentIdx[0] > 0);
+            nextBtn.setEnabled(currentIdx[0] < images.size() - 1);
+
+            // Thumbnail sofort
+            if (current.hasThumbnail()) {
+                StreamResource res = new StreamResource(current.getName(),
+                        () -> new ByteArrayInputStream(current.getThumbnail()));
+                fullImg.setSrc(res);
+            } else {
+                fullImg.setSrc("icons/icon.png");
+            }
+
+            // Original asynchron
+            UI ui = UI.getCurrent();
+            Thread t = new Thread(() -> {
+                try {
+                    java.io.File file = current.getPath().toFile();
+                    if (file.exists() && file.canRead()) {
+                        StreamResource orig = new StreamResource(current.getName(),
+                                () -> { try { return new java.io.FileInputStream(file); }
+                                        catch (Exception ex) { return new ByteArrayInputStream(new byte[0]); } });
+                        ui.access(() -> fullImg.setSrc(orig));
+                    }
+                } catch (Exception ignored) {}
+            });
+            t.start();
+
+            // Tags
+            tagRow.removeAll();
+            AppUserInfo user = currentUser.require();
+            tagService.getTagsForNode(current).forEach(tag -> {
+                Span chip = new Span(tag.getFullPath());
+                chip.getStyle()
+                        .set("background", "var(--lumo-primary-color-10pct)")
+                        .set("color", "var(--lumo-primary-text-color)")
+                        .set("padding", "2px 8px")
+                        .set("border-radius", "12px")
+                        .set("font-size", "0.8em");
+                tagRow.add(chip);
+            });
+            ImageFile finalCurrent = current;
+            Button editTagsBtn = new Button("🏷 Tags bearbeiten", ev ->
+                new TagDialog(List.<consulting.segieth.vfs.domain.FileNode>of(finalCurrent), tagService, user, () -> {}).open());
+            editTagsBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY, ButtonVariant.LUMO_SMALL);
+            tagRow.add(editTagsBtn);
+
+            // Navigation zu nächster Seite wenn am Ende
+            if (currentIdx[0] == images.size() - 1 && hasMore) {
+                loadNextPage();
+            }
+        };
+
+        prevBtn.addClickListener(e -> {
+            if (currentIdx[0] > 0) { currentIdx[0]--; loadImage.run(); }
+        });
+        nextBtn.addClickListener(e -> {
+            if (currentIdx[0] < images.size() - 1) { currentIdx[0]++; loadImage.run(); }
+        });
+
+        loadImage.run();
         dialog.open();
     }
 }

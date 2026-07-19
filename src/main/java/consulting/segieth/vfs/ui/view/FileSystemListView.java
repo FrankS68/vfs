@@ -30,9 +30,8 @@ import consulting.segieth.vfs.service.ImageService;
 import consulting.segieth.vfs.service.VFSNode;
 import jakarta.annotation.security.PermitAll;
 
-@Route("")
+@Route("filesystem-list")
 @PageTitle("FileSystem List")
-@Menu(order = 0, icon = "vaadin:clipboard-check", title = "FileSystem List")
 @PermitAll // When security is enabled, allow all authenticated users
 public class FileSystemListView extends FileSystemView {
 
