@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Anmelden – VFS</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #1a2a3a;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 40px;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.3);
+            width: 360px;
+            text-align: center;
+        }
+        h1 { font-size: 1.8rem; margin-bottom: 6px; color: #1a2a3a; }
+        p { color: #666; margin-bottom: 32px; }
+        .btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            border-radius: 8px;
+            padding: 13px 20px;
+            margin-bottom: 12px;
+            font-weight: 600;
+            font-size: 0.95rem;
+            text-decoration: none;
+            color: white;
+            transition: opacity 0.2s;
+        }
+        .btn:hover { opacity: 0.85; }
+        .icon { font-size: 1.1rem; }
+        .divider {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 8px 0 12px;
+            color: #ccc;
+            font-size: 0.8em;
+        }
+        .divider::before, .divider::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: #eee;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>🗂 VFS</h1>
+        <p>Bitte anmelden um fortzufahren</p>
+
+        <a class="btn" href="/oauth2/authorization/mastodon" style="background:#6364FF">
+            <span class="icon">🐘</span><span>Mit Mastodon anmelden</span>
+        </a>
+
+        <div class="divider">oder</div>
+
+        <a class="btn" href="/oauth2/authorization/google" style="background:#4285F4">
+            <span class="icon">G</span><span>Mit Google anmelden</span>
+        </a>
+        <a class="btn" href="/oauth2/authorization/github" style="background:#24292e">
+            <span class="icon">🐙</span><span>Mit GitHub anmelden</span>
+        </a>
+        <a class="btn" href="/oauth2/authorization/gitlab" style="background:#FC6D26">
+            <span class="icon">🦊</span><span>Mit GitLab anmelden</span>
+        </a>
+    </div>
+</body>
+</html>
