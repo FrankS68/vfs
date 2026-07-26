@@ -11,6 +11,7 @@ import com.vaadin.flow.component.AttachEvent;
 import com.vaadin.flow.component.UI;
 import com.vaadin.flow.component.button.Button;
 import com.vaadin.flow.component.button.ButtonVariant;
+import com.vaadin.flow.component.details.Details;
 import com.vaadin.flow.component.dialog.Dialog;
 import com.vaadin.flow.component.grid.Grid.SelectionMode;
 import com.vaadin.flow.component.grid.contextmenu.GridContextMenu;
@@ -64,6 +65,7 @@ public class FileSystemTreeView extends FileSystemView {
     private final TagService tagService;
     private final CurrentUser currentUser;
     private final ProcessLogger processLogger;
+    private final HashService hashService;
     private final HorizontalLayout multiActionBar;
     private final Span multiSelectionLabel;
     TreeGrid<VFSNode> fileSystemTree;
@@ -90,6 +92,7 @@ public class FileSystemTreeView extends FileSystemView {
         this.tagService = tagService;
         this.currentUser = currentUser;
         this.processLogger = processLogger;
+        this.hashService = hashService;
 
         Button refreshBtn = new Button("Tree neu laden", new Icon(VaadinIcon.REFRESH));
         refreshBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY);
@@ -314,7 +317,13 @@ public class FileSystemTreeView extends FileSystemView {
             icon.setSize("1em");
             icon.getStyle().set("cursor", "pointer");
             icon.getElement().setAttribute("title", "Duplikat — klicken für Details");
-            icon.addClickListener(e -> showDuplicateDialog(node.getFileNode()));
+            icon.addClickListener(e -> {
+                if (node.getFileNode().getContentHash() != null) {
+                    showDuplicateDialog(node.getFileNode());
+                } else {
+                    showDuplicatesForFolder(node.getFileNode().getSystem(), node.getFileNode().getAddress());
+                }
+            });
             return icon;
         }).setHeader("").setWidth("50px").setFlexGrow(0);
 
@@ -594,12 +603,90 @@ public class FileSystemTreeView extends FileSystemView {
         }
     }
 
-    private void showDuplicatesForFolder(String system, String folderAddress) {
-        Map<String, List<FileNode>> allGroups = duplicateService.findDuplicateGroups();
+    /** Zeigt eine Bestätigung mit erklärendem Text an, führt die Aktion nur bei Zustimmung aus. */
+    private void confirmAndRun(String message, Runnable action) {
+        Dialog confirm = new Dialog();
+        confirm.setCloseOnEsc(true);
+        confirm.setCloseOnOutsideClick(true);
 
-        // Nur Gruppen wo mindestens eine Datei unter diesem Ordner liegt
+        Span msgSpan = new Span(message);
+        msgSpan.getStyle().set("max-width", "400px").set("display", "block");
+
+        Button yesBtn = new Button("Ja, ausführen", e -> {
+            confirm.close();
+            action.run();
+        });
+        yesBtn.addThemeVariants(ButtonVariant.LUMO_ERROR);
+        Button noBtn = new Button("Abbrechen", e -> confirm.close());
+        noBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY);
+
+        HorizontalLayout btnRow = new HorizontalLayout(noBtn, yesBtn);
+        btnRow.setJustifyContentMode(JustifyContentMode.END);
+        btnRow.setWidthFull();
+
+        VerticalLayout layout = new VerticalLayout(msgSpan, btnRow);
+        layout.setPadding(false);
+        confirm.add(layout);
+        confirm.open();
+    }
+
+    /** Zeigt einen blockierenden Hinweis, dass erst alle Dateien einen Hash brauchen, bevor
+     * verglichen/gemerged/getrashed werden kann — mit direkter Möglichkeit die Hashes zu berechnen. */
+    private void showHashRequiredNotice(long missingCount, String where) {
+        Dialog notice = new Dialog();
+        notice.setWidth("440px");
+
+        Span msg = new Span(missingCount + " Datei(en) in " + where + " haben noch keinen berechneten Hash. "
+                + "Ordner-Vergleich, Merge und Trash sind erst möglich, wenn wirklich alle Dateien einen Hash "
+                + "haben — sonst kann nicht zuverlässig erkannt werden, welche Dateien tatsächlich identisch sind.");
+        msg.getStyle().set("display", "block");
+
+        Button computeBtn = new Button("Hashes jetzt berechnen", VaadinIcon.HASH.create());
+        computeBtn.addThemeVariants(ButtonVariant.LUMO_PRIMARY);
+        computeBtn.addClickListener(e -> {
+            notice.close();
+            runHashComputation();
+        });
+        Button closeBtn = new Button("Schließen", e -> notice.close());
+        closeBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY);
+
+        HorizontalLayout btnRow = new HorizontalLayout(closeBtn, computeBtn);
+        btnRow.setJustifyContentMode(JustifyContentMode.END);
+        btnRow.setWidthFull();
+
+        VerticalLayout layout = new VerticalLayout(msg, btnRow);
+        layout.setPadding(false);
+        notice.add(layout);
+        notice.open();
+    }
+
+    /** Berechnet fehlende Hashes im Hintergrund (systemweit) und aktualisiert den Tree danach. */
+    private void runHashComputation() {
+        UI ui = UI.getCurrent();
+        Notification.show("Hashes werden berechnet...", 2000, Notification.Position.TOP_END);
+        Thread thread = new Thread(() -> {
+            hashService.computeMissingHashes((done, total) -> {});
+            ui.access(() -> {
+                treeService.invalidateDuplicateCache();
+                fileSystemTree.getDataProvider().refreshAll();
+                Notification.show("Hashes fertig!", 3000, Notification.Position.TOP_END)
+                        .addThemeVariants(NotificationVariant.LUMO_SUCCESS);
+            });
+        });
+        thread.start();
+    }
+
+    private void showDuplicatesForFolder(String system, String folderAddress) {
         String prefix = folderAddress.endsWith("\\") || folderAddress.endsWith("/")
                 ? folderAddress : folderAddress + "\\";
+
+        long missingHere = duplicateService.countMissingHashes(prefix);
+        if (missingHere > 0) {
+            showHashRequiredNotice(missingHere, "diesem Ordner");
+            return;
+        }
+
+        Map<String, List<FileNode>> allGroups = duplicateService.findDuplicateGroups();
         Map<String, List<FileNode>> relevantGroups = new java.util.LinkedHashMap<>();
         for (Map.Entry<String, List<FileNode>> entry : allGroups.entrySet()) {
             boolean hasFileInFolder = entry.getValue().stream()
@@ -613,8 +700,24 @@ public class FileSystemTreeView extends FileSystemView {
             return;
         }
 
+        // Erkenne ob alle Duplikate aus einem anderen Verzeichnis stammen
+        // (= ganzes Verzeichnis wurde kopiert)
+        java.util.Map<String, Long> otherDirCount = new java.util.LinkedHashMap<>();
+        for (List<FileNode> group : relevantGroups.values()) {
+            for (FileNode fn : group) {
+                if (!fn.getAddress().startsWith(prefix)) {
+                    // Elternverzeichnis ermitteln
+                    String parent = fn.getAddress().contains("\\")
+                            ? fn.getAddress().substring(0, fn.getAddress().lastIndexOf("\\") + 1)
+                            : fn.getAddress().substring(0, fn.getAddress().lastIndexOf("/") + 1);
+                    otherDirCount.merge(parent, 1L, Long::sum);
+                }
+            }
+        }
+
         Dialog dialog = new Dialog();
-        dialog.setWidth("700px");
+        dialog.setWidth("750px");
+        dialog.setMaxHeight("80vh");
         dialog.setDraggable(true);
 
         HorizontalLayout header = new HorizontalLayout();
@@ -630,8 +733,249 @@ public class FileSystemTreeView extends FileSystemView {
         VerticalLayout content = new VerticalLayout(header);
         content.setPadding(false);
         content.setSpacing(true);
+        content.setWidthFull();
 
+        // Zeige Verzeichnis-Duplikat-Hinweis wenn erkannt
+        if (!otherDirCount.isEmpty()) {
+            VerticalLayout hint = new VerticalLayout();
+            hint.getStyle()
+                    .set("background", "var(--lumo-primary-color-10pct)")
+                    .set("border-radius", "8px")
+                    .set("padding", "12px");
+            hint.setSpacing(true);
+            Span hintTitle = new Span("⚠️ Ganzer Ordner scheint dupliziert zu sein");
+            hintTitle.getStyle().set("font-weight", "bold");
+            Span hintExplain = new Span(
+                    "Ein Teil der Dateien in diesem Ordner existiert unverändert in einem anderen Ordner. " +
+                    "Vermutlich wurde der Ordner irgendwann kopiert. Du kannst die beiden Ordner zusammenführen: " +
+                    "der eine Ordner wird geleert (Dateien werden nach drüben verschoben bzw. als Duplikat gelöscht), " +
+                    "der andere bleibt als vollständige Kopie übrig.");
+            hintExplain.getStyle().set("font-size", "0.85em").set("color", "var(--lumo-secondary-text-color)");
+            VerticalLayout titleBlock = new VerticalLayout(hintTitle, hintExplain);
+            titleBlock.setPadding(false);
+            titleBlock.setSpacing(false);
+            hint.add(titleBlock);
+
+            otherDirCount.entrySet().stream()
+                    .sorted(java.util.Map.Entry.<String, Long>comparingByValue().reversed())
+                    .forEach(e -> {
+                String otherDir = e.getKey();
+                long count = e.getValue();
+
+                VerticalLayout card = new VerticalLayout();
+                card.getStyle()
+                        .set("background", "var(--lumo-base-color)")
+                        .set("border", "1px solid var(--lumo-contrast-20pct)")
+                        .set("border-radius", "6px")
+                        .set("padding", "10px");
+                card.setPadding(false);
+                card.setSpacing(false);
+
+                Span matchLbl = new Span("Anderer Ordner:");
+                matchLbl.getStyle().set("font-size", "0.85em");
+                Span otherDirLbl = new Span(otherDir);
+                otherDirLbl.getStyle().set("font-size", "0.85em").set("font-weight", "bold")
+                        .set("word-break", "break-all");
+                card.add(matchLbl, otherDirLbl);
+
+                long missingOther = duplicateService.countMissingHashes(otherDir);
+                if (missingOther > 0) {
+                    Span blockMsg = new Span(missingOther + " Datei(en) im anderen Ordner haben noch keinen "
+                            + "berechneten Hash. Vergleich, Merge und Trash sind hier erst möglich, wenn alle "
+                            + "Dateien einen Hash haben.");
+                    blockMsg.getStyle().set("font-size", "0.85em")
+                            .set("color", "var(--lumo-error-text-color)")
+                            .set("display", "block")
+                            .set("margin-top", "8px");
+                    card.add(blockMsg);
+
+                    Button computeBtn = new Button("Hashes jetzt berechnen", VaadinIcon.HASH.create());
+                    computeBtn.addThemeVariants(ButtonVariant.LUMO_PRIMARY, ButtonVariant.LUMO_SMALL);
+                    computeBtn.setWidthFull();
+                    computeBtn.getStyle().set("margin-top", "6px");
+                    computeBtn.addClickListener(ev -> {
+                        dialog.close();
+                        runHashComputation();
+                    });
+                    card.add(computeBtn);
+
+                    hint.add(card);
+                    return;
+                }
+
+                int[] intoOther = duplicateService.previewMerge(prefix, otherDir);
+                int[] fromOther = duplicateService.previewMerge(otherDir, prefix);
+                long hereTotal = intoOther[0] + intoOther[1];
+                long otherTotal = fromOther[0] + fromOther[1];
+                Span breakdown = new Span(
+                        "Hier: " + hereTotal + " Dateien (davon " + intoOther[1] + " auch dort vorhanden). "
+                        + "Dort: " + otherTotal + " Dateien (davon " + fromOther[1] + " auch hier vorhanden, "
+                        + fromOther[0] + " nur dort).");
+                breakdown.getStyle().set("font-size", "0.8em")
+                        .set("color", "var(--lumo-secondary-text-color)")
+                        .set("display", "block")
+                        .set("margin-top", "4px");
+                card.add(breakdown);
+
+                List<Long> onlyHereImageIds = duplicateService.findUnique(prefix, otherDir).stream()
+                        .filter(fn -> fn instanceof ImageFile)
+                        .map(FileNode::getId)
+                        .collect(java.util.stream.Collectors.toList());
+                List<Long> onlyThereImageIds = duplicateService.findUnique(otherDir, prefix).stream()
+                        .filter(fn -> fn instanceof ImageFile)
+                        .map(FileNode::getId)
+                        .collect(java.util.stream.Collectors.toList());
+
+                if (!onlyHereImageIds.isEmpty() || !onlyThereImageIds.isEmpty()) {
+                    HorizontalLayout galleryRow = new HorizontalLayout();
+                    galleryRow.setWidthFull();
+                    galleryRow.getStyle().set("margin-top", "6px").set("gap", "4px");
+                    if (!onlyHereImageIds.isEmpty()) {
+                        Button onlyHereBtn = new Button("🖼 Nur hier ansehen (" + onlyHereImageIds.size() + ")",
+                                ev -> GalleryView.openForIds(UI.getCurrent(), onlyHereImageIds, "Nur hier: " + prefix));
+                        onlyHereBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY, ButtonVariant.LUMO_SMALL);
+                        galleryRow.add(onlyHereBtn);
+                        galleryRow.expand(onlyHereBtn);
+                    }
+                    if (!onlyThereImageIds.isEmpty()) {
+                        Button onlyThereBtn = new Button("🖼 Nur dort ansehen (" + onlyThereImageIds.size() + ")",
+                                ev -> GalleryView.openForIds(UI.getCurrent(), onlyThereImageIds, "Nur dort: " + otherDir));
+                        onlyThereBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY, ButtonVariant.LUMO_SMALL);
+                        galleryRow.add(onlyThereBtn);
+                        galleryRow.expand(onlyThereBtn);
+                    }
+                    card.add(galleryRow);
+                }
+
+                Button mergeIntoOtherBtn = new Button();
+                mergeIntoOtherBtn.setIcon(VaadinIcon.ARROW_FORWARD.create());
+                mergeIntoOtherBtn.setText("Diesen Ordner leeren — " + intoOther[0] + " Dateien nach dort verschieben, "
+                        + intoOther[1] + " hier löschen");
+                mergeIntoOtherBtn.addThemeVariants(ButtonVariant.LUMO_PRIMARY, ButtonVariant.LUMO_SMALL);
+                mergeIntoOtherBtn.setWidthFull();
+                mergeIntoOtherBtn.addClickListener(ev -> confirmAndRun(
+                        intoOther[0] + " Dateien werden nach '" + otherDir + "' verschoben, "
+                                + intoOther[1] + " Dateien aus diesem Ordner werden gelöscht (Trash), da sie dort "
+                                + "per Hash bereits vorhanden sind. Fortfahren?",
+                        () -> {
+                            int[] result = duplicateService.mergeIntoFolder(prefix, otherDir);
+                            treeService.invalidateDuplicateCache();
+                            fileSystemTree.getDataProvider().refreshAll();
+                            dialog.close();
+                            String msg = result[0] + " verschoben, " + result[1] + " getrashed";
+                            if (result[2] > 0) msg += ", " + result[2] + " fehlgeschlagen";
+                            Notification.show(msg, 4000, Notification.Position.TOP_CENTER)
+                                    .addThemeVariants(result[2] > 0
+                                            ? NotificationVariant.LUMO_WARNING
+                                            : NotificationVariant.LUMO_SUCCESS);
+                        }));
+
+                Button mergeFromOtherBtn = new Button();
+                mergeFromOtherBtn.setIcon(VaadinIcon.ARROW_BACKWARD.create());
+                mergeFromOtherBtn.setText("Anderen Ordner leeren — " + fromOther[0] + " Dateien hierher verschieben, "
+                        + fromOther[1] + " dort löschen");
+                mergeFromOtherBtn.addThemeVariants(ButtonVariant.LUMO_PRIMARY, ButtonVariant.LUMO_SMALL);
+                mergeFromOtherBtn.setWidthFull();
+                mergeFromOtherBtn.addClickListener(ev -> confirmAndRun(
+                        fromOther[0] + " Dateien werden aus '" + otherDir + "' hierher verschoben, "
+                                + fromOther[1] + " Dateien dort werden gelöscht (Trash), da sie hier "
+                                + "per Hash bereits vorhanden sind. Fortfahren?",
+                        () -> {
+                            int[] result = duplicateService.mergeIntoFolder(otherDir, prefix);
+                            treeService.invalidateDuplicateCache();
+                            fileSystemTree.getDataProvider().refreshAll();
+                            dialog.close();
+                            String msg = result[0] + " verschoben, " + result[1] + " getrashed";
+                            if (result[2] > 0) msg += ", " + result[2] + " fehlgeschlagen";
+                            Notification.show(msg, 4000, Notification.Position.TOP_CENTER)
+                                    .addThemeVariants(result[2] > 0
+                                            ? NotificationVariant.LUMO_WARNING
+                                            : NotificationVariant.LUMO_SUCCESS);
+                        }));
+
+                VerticalLayout mergeButtons = new VerticalLayout(mergeIntoOtherBtn, mergeFromOtherBtn);
+                mergeButtons.setPadding(false);
+                mergeButtons.setSpacing(false);
+                mergeButtons.getStyle().set("gap", "4px").set("margin-top", "8px");
+                card.add(mergeButtons);
+
+                Button trashDirBtn = new Button("Alle " + count + " Dateien aus diesem Ordner löschen (Trash)",
+                        VaadinIcon.TRASH.create());
+                trashDirBtn.addThemeVariants(ButtonVariant.LUMO_ERROR, ButtonVariant.LUMO_SMALL, ButtonVariant.LUMO_TERTIARY);
+                trashDirBtn.setWidthFull();
+                trashDirBtn.addClickListener(ev -> confirmAndRun(
+                        "Alle " + count + " übereinstimmenden Dateien aus diesem Ordner werden gelöscht (Trash), "
+                                + "unabhängig davon ob sie noch woanders gebraucht werden. Fortfahren?",
+                        () -> {
+                            int ok = 0, fail = 0;
+                            for (List<FileNode> group : relevantGroups.values()) {
+                                for (FileNode fn : group) {
+                                    if (fn.getAddress().startsWith(prefix)) {
+                                        try { duplicateService.moveToTrash(fn); ok++; }
+                                        catch (Exception ex) { fail++; }
+                                    }
+                                }
+                            }
+                            treeService.invalidateDuplicateCache();
+                            fileSystemTree.getDataProvider().refreshAll();
+                            dialog.close();
+                            String msg = ok + " Dateien in Trash verschoben";
+                            if (fail > 0) msg += ", " + fail + " fehlgeschlagen";
+                            Notification.show(msg, 3000, Notification.Position.TOP_CENTER)
+                                    .addThemeVariants(fail > 0
+                                            ? NotificationVariant.LUMO_WARNING
+                                            : NotificationVariant.LUMO_SUCCESS);
+                        }));
+
+                Button trashOtherBtn = new Button("Alle " + count + " Dateien aus dem anderen Ordner löschen (Trash)",
+                        VaadinIcon.TRASH.create());
+                trashOtherBtn.addThemeVariants(ButtonVariant.LUMO_ERROR, ButtonVariant.LUMO_SMALL, ButtonVariant.LUMO_TERTIARY);
+                trashOtherBtn.setWidthFull();
+                trashOtherBtn.addClickListener(ev -> confirmAndRun(
+                        "Alle " + count + " übereinstimmenden Dateien aus '" + otherDir + "' werden gelöscht (Trash), "
+                                + "unabhängig davon ob sie noch woanders gebraucht werden. Fortfahren?",
+                        () -> {
+                            int ok = 0, fail = 0;
+                            for (List<FileNode> group : relevantGroups.values()) {
+                                for (FileNode fn : group) {
+                                    if (fn.getAddress().startsWith(otherDir)) {
+                                        try { duplicateService.moveToTrash(fn); ok++; }
+                                        catch (Exception ex) { fail++; }
+                                    }
+                                }
+                            }
+                            treeService.invalidateDuplicateCache();
+                            fileSystemTree.getDataProvider().refreshAll();
+                            dialog.close();
+                            String msg = ok + " Dateien in Trash verschoben";
+                            if (fail > 0) msg += ", " + fail + " fehlgeschlagen";
+                            Notification.show(msg, 3000, Notification.Position.TOP_CENTER)
+                                    .addThemeVariants(fail > 0
+                                            ? NotificationVariant.LUMO_WARNING
+                                            : NotificationVariant.LUMO_SUCCESS);
+                        }));
+
+                VerticalLayout advancedContent = new VerticalLayout(trashDirBtn, trashOtherBtn);
+                advancedContent.setPadding(false);
+                advancedContent.getStyle().set("gap", "4px");
+
+                Details advanced = new Details("Erweitert: nur löschen, ohne zu verschieben", advancedContent);
+                advanced.addThemeVariants(com.vaadin.flow.component.details.DetailsVariant.SMALL);
+                advanced.getStyle().set("margin-top", "6px");
+                card.add(advanced);
+
+                hint.add(card);
+            });
+            content.add(hint);
+        }
+
+        // Einzelne Gruppen (max. 20 anzeigen)
+        int shown = 0;
         for (List<FileNode> group : relevantGroups.values()) {
+            if (shown++ >= 20) {
+                content.add(new Span("... und " + (relevantGroups.size() - 20) + " weitere Gruppen"));
+                break;
+            }
             List<FileNode> remaining = new ArrayList<>(group);
             for (FileNode node : group) {
                 content.add(buildDialogRow(node, remaining, content, dialog));
@@ -639,7 +983,10 @@ public class FileSystemTreeView extends FileSystemView {
             content.add(new com.vaadin.flow.component.html.Hr());
         }
 
-        dialog.add(content);
+        com.vaadin.flow.component.orderedlayout.Scroller scroller =
+                new com.vaadin.flow.component.orderedlayout.Scroller(content);
+        scroller.setWidthFull();
+        dialog.add(scroller);
         dialog.open();
     }
 

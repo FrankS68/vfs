@@ -22,7 +22,14 @@ public interface FileNodeRepository extends JpaRepository<FileNode, Long> {
     @Query("SELECT COUNT(f) FROM FileNode f JOIN f.tags t WHERE t = :tag")
     long countByTag(@Param("tag") consulting.segieth.vfs.domain.Tag tag);
 
-    @Query("SELECT f FROM FileNode f WHERE f.contentHash IS NULL AND f.type != 'directory'")
+    /** Google Docs/Sheets/Slides/Forms & Co sind nur Cloud-Verknüpfungen ohne echten lokalen
+     * Dateiinhalt (Google Drive legt dafür bloß einen Platzhalter an) — Hash-Berechnung schlägt
+     * dafür immer fehl und ist inhaltlich auch sinnlos, deshalb von der Hash-Pflicht ausgenommen. */
+    @Query("SELECT f FROM FileNode f WHERE f.contentHash IS NULL AND f.type != 'directory' " +
+           "AND f.address NOT LIKE '%.gdoc' AND f.address NOT LIKE '%.gsheet' " +
+           "AND f.address NOT LIKE '%.gslides' AND f.address NOT LIKE '%.gform' " +
+           "AND f.address NOT LIKE '%.gdraw' AND f.address NOT LIKE '%.gsite' " +
+           "AND f.address NOT LIKE '%.gtable' AND f.address NOT LIKE '%.gmap'")
     Slice<FileNode> findWithoutHash(Pageable pageable);
 
     @Query("SELECT f FROM FileNode f WHERE f.contentHash IN (" +
@@ -72,6 +79,16 @@ public interface FileNodeRepository extends JpaRepository<FileNode, Long> {
 
     /** Alle Root-FileSystems (type = 'system') */
     List<FileNode> findAllByType(String type);
+
+    /** Anzahl Dateien (keine Verzeichnisse) unterhalb eines Pfades ohne berechneten Hash.
+     * Google-Cloud-Verknüpfungen (.gdoc etc., siehe findWithoutHash) zählen nicht mit. */
+    @Query("SELECT COUNT(f) FROM FileNode f WHERE f.address LIKE CONCAT(:addressPrefix, '%') " +
+           "AND f.contentHash IS NULL AND f.type <> 'directory' AND f.type <> 'system' " +
+           "AND f.address NOT LIKE '%.gdoc' AND f.address NOT LIKE '%.gsheet' " +
+           "AND f.address NOT LIKE '%.gslides' AND f.address NOT LIKE '%.gform' " +
+           "AND f.address NOT LIKE '%.gdraw' AND f.address NOT LIKE '%.gsite' " +
+           "AND f.address NOT LIKE '%.gtable' AND f.address NOT LIKE '%.gmap'")
+    long countMissingHashByAddress(@Param("addressPrefix") String addressPrefix);
 
     /** Prüft ob unterhalb eines Pfades irgendein Knoten mit Duplikat-Hash existiert */
     @Query("SELECT COUNT(f) > 0 FROM FileNode f WHERE f.system = :system " +

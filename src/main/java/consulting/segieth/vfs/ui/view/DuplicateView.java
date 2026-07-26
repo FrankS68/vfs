@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
+import com.vaadin.flow.component.UI;
 import com.vaadin.flow.component.button.Button;
 import com.vaadin.flow.component.button.ButtonVariant;
 import com.vaadin.flow.component.html.Hr;
@@ -28,18 +29,21 @@ public class DuplicateView extends VerticalLayout {
 
     private final DuplicateService duplicateService;
     private final VerticalLayout groupContainer;
+    private final Button scanBtn;
 
     public DuplicateView(DuplicateService duplicateService) {
         this.duplicateService = duplicateService;
 
-        Button scanBtn = new Button("Duplikate suchen", e -> loadDuplicates());
+        scanBtn = new Button("Duplikate suchen", e -> loadDuplicatesAsync());
         scanBtn.addThemeVariants(ButtonVariant.LUMO_PRIMARY);
+        scanBtn.setEnabled(false);
 
         HorizontalLayout toolbar = new HorizontalLayout(scanBtn);
 
         groupContainer = new VerticalLayout();
         groupContainer.setPadding(false);
         groupContainer.setSpacing(false);
+        groupContainer.add(new Span("Suche läuft..."));
 
         Scroller scroller = new Scroller(groupContainer);
         scroller.setSizeFull();
@@ -47,12 +51,28 @@ public class DuplicateView extends VerticalLayout {
         add(toolbar, scroller);
         setSizeFull();
         setPadding(true);
+
+        addAttachListener(e -> loadDuplicatesAsync());
     }
 
-    private void loadDuplicates() {
+    private void loadDuplicatesAsync() {
+        scanBtn.setEnabled(false);
         groupContainer.removeAll();
+        groupContainer.add(new Span("Suche läuft..."));
 
-        Map<String, List<FileNode>> groups = duplicateService.findDuplicateGroups();
+        UI ui = UI.getCurrent();
+        Thread thread = new Thread(() -> {
+            Map<String, List<FileNode>> groups = duplicateService.findDuplicateGroups();
+            ui.access(() -> {
+                applyDuplicates(groups);
+                scanBtn.setEnabled(true);
+            });
+        });
+        thread.start();
+    }
+
+    private void applyDuplicates(Map<String, List<FileNode>> groups) {
+        groupContainer.removeAll();
 
         if (groups.isEmpty()) {
             groupContainer.add(new Span("Keine Duplikate gefunden."));

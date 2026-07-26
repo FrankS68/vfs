@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import consulting.segieth.vfs.domain.FileNode;
 import consulting.segieth.vfs.domain.FileNodeRepository;
@@ -26,6 +27,11 @@ public class DuplicateService {
     public DuplicateService(FileNodeRepository fileNodeRepository, FileSystemRepository fileSystemRepository) {
         this.fileNodeRepository = fileNodeRepository;
         this.fileSystemRepository = fileSystemRepository;
+    }
+
+    /** Anzahl Dateien unterhalb eines Pfades, die noch keinen Hash haben. */
+    public long countMissingHashes(String addressPrefix) {
+        return fileNodeRepository.countMissingHashByAddress(addressPrefix);
     }
 
     /** Gibt Duplikat-Gruppen zurück: Hash → Liste von FileNodes */
@@ -70,6 +76,114 @@ public class DuplicateService {
 
     public FileNode findById(Long id) {
         return fileNodeRepository.findById(id).orElse(null);
+    }
+
+    private static class MergePlan {
+        List<FileNode> sourceNodes;
+        java.util.Set<String> targetHashes;
+    }
+
+    private MergePlan planMerge(String sourcePrefix, String targetPrefix) {
+        List<FileNode> allNodes = fileNodeRepository.findAll();
+
+        MergePlan plan = new MergePlan();
+        // Alle Hashes die im Ziel bereits existieren
+        plan.targetHashes = allNodes.stream()
+                .filter(fn -> fn.getAddress().startsWith(targetPrefix))
+                .filter(fn -> fn.getContentHash() != null)
+                .map(FileNode::getContentHash)
+                .collect(java.util.stream.Collectors.toSet());
+
+        plan.sourceNodes = allNodes.stream()
+                .filter(fn -> fn.getAddress().startsWith(sourcePrefix))
+                .filter(fn -> !fn.getType().equals("directory") && !fn.getType().equals("system"))
+                .collect(java.util.stream.Collectors.toList());
+
+        return plan;
+    }
+
+    /** Liefert die Dateien aus sourcePrefix, die per Hash NICHT in targetPrefix vorkommen
+     * (also die "nur hier"-Dateien aus previewMerge — dieselbe Menge die dort verschoben würde). */
+    public List<FileNode> findUnique(String sourcePrefix, String targetPrefix) {
+        MergePlan plan = planMerge(sourcePrefix, targetPrefix);
+        List<FileNode> unique = new ArrayList<>();
+        for (FileNode source : plan.sourceNodes) {
+            boolean existsInTarget = source.getContentHash() != null
+                    && plan.targetHashes.contains(source.getContentHash());
+            if (!existsInTarget) unique.add(source);
+        }
+        return unique;
+    }
+
+    /** Simuliert mergeIntoFolder ohne Dateien oder DB anzufassen.
+     * Abgleich erfolgt ausschließlich über den Content-Hash — Dateien ohne Hash gelten
+     * als "nicht geprüft" und werden nie automatisch als Duplikat gelöscht, nur verschoben.
+     * @return int[] { würde verschoben, würde getrashed, davon ohne Hash (ungeprüft, in "würde verschoben" enthalten) } */
+    public int[] previewMerge(String sourcePrefix, String targetPrefix) {
+        MergePlan plan = planMerge(sourcePrefix, targetPrefix);
+        int wouldMove = 0, wouldTrash = 0, noHash = 0;
+        for (FileNode source : plan.sourceNodes) {
+            boolean existsInTarget = source.getContentHash() != null
+                    && plan.targetHashes.contains(source.getContentHash());
+            if (existsInTarget) {
+                wouldTrash++;
+            } else {
+                wouldMove++;
+                if (source.getContentHash() == null) noHash++;
+            }
+        }
+        return new int[]{ wouldMove, wouldTrash, noHash };
+    }
+
+    /** Mergt zwei Verzeichnisse: Dateien die im Ziel fehlen werden verschoben, Duplikate getrashed.
+     * Abgleich erfolgt ausschließlich über den Content-Hash (kein Namens-Fallback), damit nie
+     * eine Datei nur wegen gleichen Namens fälschlich als Duplikat gelöscht wird.
+     * @return int[] { verschoben, getrashed, fehlgeschlagen } */
+    @Transactional
+    public int[] mergeIntoFolder(String sourcePrefix, String targetPrefix) {
+        MergePlan plan = planMerge(sourcePrefix, targetPrefix);
+        List<FileNode> sourceNodes = plan.sourceNodes;
+        java.util.Set<String> targetHashes = plan.targetHashes;
+
+        int moved = 0, trashed = 0, failed = 0;
+
+        for (FileNode source : sourceNodes) {
+            try {
+                boolean existsInTarget = source.getContentHash() != null
+                        && targetHashes.contains(source.getContentHash());
+
+                if (existsInTarget) {
+                    // Duplikat — in Trash
+                    moveToTrash(source);
+                    trashed++;
+                } else {
+                    // Fehlt im Ziel — verschieben
+                    java.nio.file.Path sourcePath = java.nio.file.Paths.get(source.getAddress());
+                    java.nio.file.Path targetPath = java.nio.file.Paths.get(targetPrefix).resolve(sourcePath.getFileName());
+                    // Namenskollision im Ziel vermeiden
+                    int i = 1;
+                    while (java.nio.file.Files.exists(targetPath)) {
+                        String name = sourcePath.getFileName().toString();
+                        int dot = name.lastIndexOf('.');
+                        String base = dot >= 0 ? name.substring(0, dot) : name;
+                        String ext  = dot >= 0 ? name.substring(dot) : "";
+                        targetPath = java.nio.file.Paths.get(targetPrefix).resolve(base + "_" + i++ + ext);
+                    }
+                    if (java.nio.file.Files.exists(sourcePath)) {
+                        java.nio.file.Files.move(sourcePath, targetPath, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+                    }
+                    source.setAddress(targetPath.normalize().toString());
+                    fileNodeRepository.save(source);
+                    // Hash dem Ziel-Set hinzufügen
+                    if (source.getContentHash() != null) targetHashes.add(source.getContentHash());
+                    moved++;
+                }
+            } catch (Exception e) {
+                System.err.println("Merge fehlgeschlagen für: " + source.getAddress() + " - " + e.getMessage());
+                failed++;
+            }
+        }
+        return new int[]{ moved, trashed, failed };
     }
 
     private String findTrashPath(FileNode node) {

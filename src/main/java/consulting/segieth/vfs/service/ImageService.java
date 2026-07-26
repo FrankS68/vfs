@@ -92,6 +92,10 @@ public class ImageService {
 		return repository.findByTagId(tagId, pageable);
 	}
 
+	public List<ImageFile> findByIds(List<Long> ids) {
+		return repository.findAllById(ids);
+	}
+
 	public boolean hasImagesUnder(String folderAddress) {
 		return repository.hasImagesUnder(folderAddress);
 	}

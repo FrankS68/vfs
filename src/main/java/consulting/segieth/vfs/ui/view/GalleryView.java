@@ -74,6 +74,7 @@ public class GalleryView extends VerticalLayout implements BeforeEnterObserver {
     private String currentQuery = "";
     private String folderFilter = null;
     private Long tagFilter = null;
+    private List<Long> idsFilter = null;
 
     // Selektion
     private final Set<ImageFile> selected = new LinkedHashSet<>();
@@ -85,18 +86,40 @@ public class GalleryView extends VerticalLayout implements BeforeEnterObserver {
                 java.net.URLEncoder.encode(folderAddress, java.nio.charset.StandardCharsets.UTF_8)));
     }
 
+    /** Öffnet die Gallery mit einer festen Liste von Bild-IDs (z.B. "nur hier"/"nur dort" beim Ordner-Vergleich). */
+    public static void openForIds(UI ui, List<Long> ids, String label) {
+        String idsParam = ids.stream().map(String::valueOf).collect(java.util.stream.Collectors.joining(","));
+        ui.navigate("gallery", QueryParameters.simple(java.util.Map.of(
+                "ids", idsParam,
+                "label", java.net.URLEncoder.encode(label, java.nio.charset.StandardCharsets.UTF_8))));
+    }
+
     @Override
     public void beforeEnter(BeforeEnterEvent event) {
         var params = event.getLocation().getQueryParameters().getParameters();
-        if (params.containsKey("folder") && !params.get("folder").isEmpty()) {
+        if (params.containsKey("ids") && !params.get("ids").isEmpty()) {
+            idsFilter = java.util.Arrays.stream(params.get("ids").get(0).split(","))
+                    .filter(s -> !s.isBlank())
+                    .map(Long::parseLong)
+                    .collect(java.util.stream.Collectors.toList());
+            folderFilter = null;
+            tagFilter = null;
+            String label = params.containsKey("label") && !params.get("label").isEmpty()
+                    ? java.net.URLDecoder.decode(params.get("label").get(0), java.nio.charset.StandardCharsets.UTF_8)
+                    : "Auswahl";
+            folderBanner.setText(label + " (" + idsFilter.size() + " Dateien)");
+            folderBanner.setVisible(true);
+        } else if (params.containsKey("folder") && !params.get("folder").isEmpty()) {
             folderFilter = java.net.URLDecoder.decode(
                     params.get("folder").get(0), java.nio.charset.StandardCharsets.UTF_8);
             tagFilter = null;
+            idsFilter = null;
             folderBanner.setText("Ordner: " + folderFilter);
             folderBanner.setVisible(true);
         } else if (params.containsKey("tag") && !params.get("tag").isEmpty()) {
             tagFilter = Long.parseLong(params.get("tag").get(0));
             folderFilter = null;
+            idsFilter = null;
             String tagName = tagRepository.findById(tagFilter)
                     .map(t -> t.getFullPath())
                     .orElse("#" + tagFilter);
@@ -105,6 +128,7 @@ public class GalleryView extends VerticalLayout implements BeforeEnterObserver {
         } else {
             folderFilter = null;
             tagFilter = null;
+            idsFilter = null;
             folderBanner.setVisible(false);
         }
         startSearch();
@@ -130,6 +154,7 @@ public class GalleryView extends VerticalLayout implements BeforeEnterObserver {
         folderBanner.setVisible(false);
         Button clearFolderBtn = new Button(new Icon(VaadinIcon.CLOSE_SMALL), e -> {
             folderFilter = null;
+            idsFilter = null;
             folderBanner.setVisible(false);
             startSearch();
         });
@@ -218,9 +243,23 @@ public class GalleryView extends VerticalLayout implements BeforeEnterObserver {
         UI ui = UI.getCurrent();
         String query = currentQuery;
         String folder = folderFilter;
+        List<Long> ids = idsFilter;
         int page = currentPage;
 
         Thread thread = new Thread(() -> {
+            if (ids != null) {
+                List<ImageFile> images = page == 0 ? service.findByIds(ids) : List.of();
+                ui.access(() -> {
+                    images.forEach(image -> {
+                        loadedImages.add(image);
+                        imageContainer.add(createImageCard(image));
+                    });
+                    hasMore = false;
+                    currentPage++;
+                    loading = false;
+                });
+                return;
+            }
             Slice<ImageFile> slice = tagFilter != null
                     ? service.findByTag(tagFilter, PageRequest.of(page, PAGE_SIZE))
                     : folder != null
