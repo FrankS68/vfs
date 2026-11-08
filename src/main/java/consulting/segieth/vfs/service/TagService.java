@@ -3,6 +3,7 @@ package consulting.segieth.vfs.service;
 import java.util.List;
 import java.util.Optional;
 
+import org.jspecify.annotations.Nullable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -23,19 +24,24 @@ public class TagService {
         this.fileNodeRepository = fileNodeRepository;
     }
 
-    /** Root-Tags für einen User (eigene + öffentliche) */
-    public List<Tag> getRootTags(AppUserInfo user) {
-        return tagRepository.findRootTagsForUser(user.getUserId().toString());
+    /** Owner-ID für Abfragen; ohne Anmeldung passt sie auf keinen Tag, es bleiben die öffentlichen */
+    private static String ownerId(@Nullable AppUserInfo user) {
+        return user == null ? "" : user.getUserId().toString();
     }
 
-    /** Kinder eines Tags für einen User */
-    public List<Tag> getChildren(Tag parent, AppUserInfo user) {
-        return tagRepository.findChildrenForUser(parent, user.getUserId().toString());
+    /** Root-Tags für einen User (eigene + öffentliche); user == null: nur öffentliche */
+    public List<Tag> getRootTags(@Nullable AppUserInfo user) {
+        return tagRepository.findRootTagsForUser(ownerId(user));
     }
 
-    /** Alle Tags für einen User — für Autocomplete/Picker */
-    public List<Tag> getAllTags(AppUserInfo user) {
-        return tagRepository.findAllForUser(user.getUserId().toString());
+    /** Kinder eines Tags für einen User; user == null: nur öffentliche */
+    public List<Tag> getChildren(Tag parent, @Nullable AppUserInfo user) {
+        return tagRepository.findChildrenForUser(parent, ownerId(user));
+    }
+
+    /** Alle Tags für einen User — für Autocomplete/Picker; user == null: nur öffentliche */
+    public List<Tag> getAllTags(@Nullable AppUserInfo user) {
+        return tagRepository.findAllForUser(ownerId(user));
     }
 
     /** Neuen Tag anlegen */
@@ -93,13 +99,21 @@ public class TagService {
         return managed.getTags();
     }
 
+    /** Tags einer Datei, die der User sehen darf (eigene + öffentliche); user == null: nur öffentliche */
+    public List<Tag> getVisibleTagsForNode(FileNode node, @Nullable AppUserInfo user) {
+        String owner = ownerId(user);
+        return getTagsForNode(node).stream()
+                .filter(t -> t.isPublic() || owner.equals(t.getOwnerUserId()))
+                .toList();
+    }
+
     /** Dateien unter einem Tag — via Repository Query statt lazy Collection */
     public List<FileNode> getFilesForTag(Tag tag) {
         return fileNodeRepository.findByTag(tag);
     }
 
     /** Hat ein Tag Kinder oder getaggte Dateien? */
-    public boolean hasChildren(Tag tag, AppUserInfo user) {
+    public boolean hasChildren(Tag tag, @Nullable AppUserInfo user) {
         if (!getChildren(tag, user).isEmpty()) return true;
         return fileNodeRepository.countByTag(tag) > 0;
     }

@@ -22,10 +22,10 @@ import com.vaadin.flow.server.menu.MenuConfiguration;
 import com.vaadin.flow.server.menu.MenuEntry;
 import com.vaadin.flow.theme.lumo.LumoUtility;
 import de.witchcafe.auth.CurrentUser;
-import jakarta.annotation.security.PermitAll;
+import com.vaadin.flow.server.auth.AnonymousAllowed;
 
 @Layout
-@PermitAll
+@AnonymousAllowed // lesen ohne Anmeldung, ändernde Aktionen nur angemeldet
 public final class MainLayout extends AppLayout {
 
     private final CurrentUser currentUser;
@@ -81,6 +81,14 @@ public final class MainLayout extends AppLayout {
                 UI.getCurrent().getPage().executeJs("window.location.href='/logout'"));
             right.add(logoutBtn);
         });
+
+        if (currentUser.get().isEmpty()) {
+            Button loginBtn = new Button("Anmelden", new Icon(VaadinIcon.SIGN_IN));
+            loginBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY, ButtonVariant.LUMO_SMALL);
+            loginBtn.getElement().setAttribute("title", "Anmelden, um zu taggen, zu verschieben und aufzuräumen");
+            loginBtn.addClickListener(e -> UI.getCurrent().navigate("login"));
+            right.add(loginBtn);
+        }
 
         HorizontalLayout navbar = new HorizontalLayout(left, right);
         navbar.setWidthFull();

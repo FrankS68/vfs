@@ -10,6 +10,7 @@ import org.springframework.scheduling.annotation.EnableAsync;
 import com.vaadin.flow.component.dependency.StyleSheet;
 import com.vaadin.flow.component.page.AppShellConfigurator;
 import com.vaadin.flow.component.page.Push;
+import com.vaadin.flow.spring.annotation.EnableVaadin;
 
 @SpringBootApplication(scanBasePackages = {
     "consulting.segieth",
@@ -23,6 +24,8 @@ import com.vaadin.flow.component.page.Push;
     "consulting.segieth",
     "de.witchcafe.auth.domain"
 })
+// Vaadin-Routen sonst nur im Paket dieser Klasse; witch-auth bringt /login mit
+@EnableVaadin({"consulting.segieth", "de.witchcafe.auth"})
 @StyleSheet(Lumo.STYLESHEET)
 @StyleSheet(Lumo.UTILITY_STYLESHEET)
 @StyleSheet("styles.css")
@@ -31,6 +34,9 @@ import com.vaadin.flow.component.page.Push;
 public class Application implements AppShellConfigurator {
 
     public static void main(String[] args) {
+        if (DesktopLauncher.handOverToRunningInstance(args)) {
+            return;
+        }
         SpringApplication.run(Application.class, args);
     }
 }

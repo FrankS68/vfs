@@ -50,13 +50,13 @@ import consulting.segieth.vfs.service.TreeStateService;
 import consulting.segieth.vfs.service.VFSNode;
 import de.witchcafe.auth.AppUserInfo;
 import de.witchcafe.auth.CurrentUser;
-import jakarta.annotation.security.PermitAll;
+import com.vaadin.flow.server.auth.AnonymousAllowed;
 
 @Route("")
 @PageTitle("FileSystem Tree")
 @Menu(order = 1, icon = "vaadin:folder-open", title = "FileSystem Tree")
 @PreserveOnRefresh
-@PermitAll
+@AnonymousAllowed // lesen ohne Anmeldung, ändernde Aktionen nur angemeldet
 public class FileSystemTreeView extends FileSystemView {
 
     private final TreeService treeService;
@@ -64,6 +64,8 @@ public class FileSystemTreeView extends FileSystemView {
     private final MoveService moveService;
     private final TagService tagService;
     private final CurrentUser currentUser;
+    /** Ohne Anmeldung nur lesen: ändernde Aktionen werden nicht angezeigt */
+    private final boolean canEdit;
     private final ProcessLogger processLogger;
     private final HashService hashService;
     private final HorizontalLayout multiActionBar;
@@ -91,6 +93,7 @@ public class FileSystemTreeView extends FileSystemView {
         this.moveService = moveService;
         this.tagService = tagService;
         this.currentUser = currentUser;
+        this.canEdit = currentUser.get().isPresent();
         this.processLogger = processLogger;
         this.hashService = hashService;
 
@@ -181,12 +184,14 @@ public class FileSystemTreeView extends FileSystemView {
             thread.start();
         });
 
-        HorizontalLayout toolbar = new HorizontalLayout(
-                refreshBtn, scanBtn,
-                new com.vaadin.flow.component.html.Span(" | "),
-                newFsBtn, editFsBtn, deleteFsBtn,
-                new com.vaadin.flow.component.html.Span(" | "),
-                thumbnailBtn, hashBtn);
+        HorizontalLayout toolbar = new HorizontalLayout(refreshBtn);
+        if (canEdit) {
+            toolbar.add(scanBtn,
+                    new com.vaadin.flow.component.html.Span(" | "),
+                    newFsBtn, editFsBtn, deleteFsBtn,
+                    new com.vaadin.flow.component.html.Span(" | "),
+                    thumbnailBtn, hashBtn);
+        }
         toolbar.setDefaultVerticalComponentAlignment(Alignment.CENTER);
         toolbar.setPadding(false);
 
@@ -227,6 +232,8 @@ public class FileSystemTreeView extends FileSystemView {
             }).open();
         });
         moveMultiBtn.addThemeVariants(ButtonVariant.LUMO_SMALL);
+        tagMultiBtn.setVisible(canEdit);
+        moveMultiBtn.setVisible(canEdit);
 
         Button clearMultiBtn = new Button("✕", e -> fileSystemTree.deselectAll());
         clearMultiBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY, ButtonVariant.LUMO_SMALL);
@@ -246,8 +253,8 @@ public class FileSystemTreeView extends FileSystemView {
             public int getChildCount(HierarchicalQuery<VFSNode, Void> query) {
                 VFSNode parent = query.getParentOptional().orElse(null);
                 if (parent == null) return treeService.getRoots().size() + 1; // +1 für TAG_ROOT
-                if (parent == TAG_ROOT) return tagService.getRootTags(currentUser.require()).size();
-                if (parent instanceof TagNode tn) return tagService.getChildren(tn.getTag(), currentUser.require()).size() + tagService.getFilesForTag(tn.getTag()).size();
+                if (parent == TAG_ROOT) return tagService.getRootTags(currentUser.get().orElse(null)).size();
+                if (parent instanceof TagNode tn) return tagService.getChildren(tn.getTag(), currentUser.get().orElse(null)).size() + tagService.getFilesForTag(tn.getTag()).size();
                 return (int) treeService.getChildren(parent).stream()
                         .skip(query.getOffset()).limit(query.getLimit()).count();
             }
@@ -256,8 +263,7 @@ public class FileSystemTreeView extends FileSystemView {
             public boolean hasChildren(VFSNode node) {
                 if (node == TAG_ROOT) return true;
                 if (node instanceof TagNode tn) {
-                    AppUserInfo user = currentUser.require();
-                    return tagService.hasChildren(tn.getTag(), user);
+                    return tagService.hasChildren(tn.getTag(), currentUser.get().orElse(null));
                 }
                 if (node.getFileNode() == null) return false;
                 return treeService.hasChildren(node);
@@ -275,8 +281,8 @@ public class FileSystemTreeView extends FileSystemView {
                 }
 
                 if (parent == TAG_ROOT) {
-                    // Kinder von TAG_ROOT: Root-Tags als TagNode
-                    AppUserInfo user = currentUser.require();
+                    // Kinder von TAG_ROOT: Root-Tags als TagNode (ohne Anmeldung nur öffentliche)
+                    AppUserInfo user = currentUser.get().orElse(null);
                     return tagService.getRootTags(user).stream()
                             .map(t -> (VFSNode) new TagNode(t))
                             .skip(query.getOffset()).limit(query.getLimit());
@@ -284,7 +290,7 @@ public class FileSystemTreeView extends FileSystemView {
 
                 if (parent instanceof TagNode tn) {
                     // Kinder eines Tags: Sub-Tags + getaggte Dateien
-                    AppUserInfo user = currentUser.require();
+                    AppUserInfo user = currentUser.get().orElse(null);
                     List<VFSNode> children = new ArrayList<>();
                     tagService.getChildren(tn.getTag(), user).stream()
                             .map(t -> (VFSNode) new TagNode(t)).forEach(children::add);
@@ -355,7 +361,7 @@ public class FileSystemTreeView extends FileSystemView {
                     e.getSource().getUI().ifPresent(ui ->
                         ui.navigate("triage", com.vaadin.flow.router.QueryParameters.of(
                                 "tag", String.valueOf(tn.getTag().getId())))));
-                actions.add(triageBtn);
+                if (canEdit) actions.add(triageBtn);
 
                 // Duplikate unter diesem Tag
                 Button dupBtn = new Button(VaadinIcon.COPY.create());
@@ -363,6 +369,7 @@ public class FileSystemTreeView extends FileSystemView {
                 dupBtn.getElement().setAttribute("title", "Duplikate unter diesem Tag");
                 dupBtn.addClickListener(e -> showDuplicatesForTag(tn));
                 actions.add(dupBtn);
+                if (!canEdit) return actions;
 
                 Button newSubTagBtn = new Button(VaadinIcon.PLUS.create());
                 newSubTagBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY, ButtonVariant.LUMO_SMALL);
@@ -425,10 +432,10 @@ public class FileSystemTreeView extends FileSystemView {
                 triageBtn.getElement().setAttribute("title", "Triage für diesen Ordner");
                 triageBtn.addClickListener(e ->
                     TriageView.openForFolder(e.getSource().getUI().orElseThrow(), node.getFileNode().getAddress()));
-                actions.add(triageBtn);
+                if (canEdit) actions.add(triageBtn);
             }
 
-            if (!type.equals("system")) {
+            if (canEdit && !type.equals("system")) {
                 Button tagBtn = new Button(VaadinIcon.TAG.create());
                 tagBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY, ButtonVariant.LUMO_SMALL);
                 tagBtn.getElement().setAttribute("title", "Tags bearbeiten");
@@ -508,7 +515,7 @@ public class FileSystemTreeView extends FileSystemView {
                         2000, Notification.Position.BOTTOM_START);
             }));
 
-        contextMenu.addItem("Vom Dateisystem scannen", event -> event.getItem().ifPresent(node -> {
+        var scanItem = contextMenu.addItem("Vom Dateisystem scannen", event -> event.getItem().ifPresent(node -> {
             if (node == TAG_ROOT || node instanceof TagNode || node.getFileNode() == null) return;
             if (!(node.getFileNode() instanceof ImageFile)) {
                 UI ui = UI.getCurrent();
@@ -541,14 +548,14 @@ public class FileSystemTreeView extends FileSystemView {
                      }
                  }));
 
-        contextMenu.addItem("Tags bearbeiten", event ->
+        var tagItem = contextMenu.addItem("Tags bearbeiten", event ->
             event.getItem().filter(n -> n != TAG_ROOT && !(n instanceof TagNode) && n.getFileNode() != null)
                  .ifPresent(n -> {
                     AppUserInfo user = currentUser.require();
                     new TagDialog(List.of(n.getFileNode()), tagService, user, () -> {}).open();
                 }));
 
-        contextMenu.addItem("Verschieben nach...", event ->
+        var moveItem = contextMenu.addItem("Verschieben nach...", event ->
             event.getItem().filter(n -> n != TAG_ROOT && !(n instanceof TagNode) && n.getFileNode() != null)
                  .ifPresent(n -> {
                 TreePickerDialog picker = new TreePickerDialog(treeService, targetDir -> {
@@ -571,6 +578,10 @@ public class FileSystemTreeView extends FileSystemView {
                 });
                 picker.open();
             }));
+
+        scanItem.setVisible(canEdit);
+        tagItem.setVisible(canEdit);
+        moveItem.setVisible(canEdit);
 
         setSizeFull();
         addClassNames(LumoUtility.BoxSizing.BORDER, LumoUtility.Display.FLEX,
@@ -647,6 +658,7 @@ public class FileSystemTreeView extends FileSystemView {
             notice.close();
             runHashComputation();
         });
+        computeBtn.setVisible(canEdit);
         Button closeBtn = new Button("Schließen", e -> notice.close());
         closeBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY);
 
@@ -797,7 +809,7 @@ public class FileSystemTreeView extends FileSystemView {
                         dialog.close();
                         runHashComputation();
                     });
-                    card.add(computeBtn);
+                    if (canEdit) card.add(computeBtn);
 
                     hint.add(card);
                     return;
@@ -897,7 +909,7 @@ public class FileSystemTreeView extends FileSystemView {
                 mergeButtons.setPadding(false);
                 mergeButtons.setSpacing(false);
                 mergeButtons.getStyle().set("gap", "4px").set("margin-top", "8px");
-                card.add(mergeButtons);
+                if (canEdit) card.add(mergeButtons);
 
                 Button trashDirBtn = new Button("Alle " + count + " Dateien aus diesem Ordner löschen (Trash)",
                         VaadinIcon.TRASH.create());
@@ -962,7 +974,7 @@ public class FileSystemTreeView extends FileSystemView {
                 Details advanced = new Details("Erweitert: nur löschen, ohne zu verschieben", advancedContent);
                 advanced.addThemeVariants(com.vaadin.flow.component.details.DetailsVariant.SMALL);
                 advanced.getStyle().set("margin-top", "6px");
-                card.add(advanced);
+                if (canEdit) card.add(advanced);
 
                 hint.add(card);
             });
@@ -1118,6 +1130,7 @@ public class FileSystemTreeView extends FileSystemView {
             }
         });
 
+        trashBtn.setVisible(canEdit);
         row.add(info, trashBtn);
         row.expand(info);
         return row;
@@ -1187,12 +1200,12 @@ public class FileSystemTreeView extends FileSystemView {
 
         if (parent == TAG_ROOT) {
             // Kinder von TAG_ROOT sind TagNodes
-            children = tagService.getRootTags(currentUser.require()).stream()
+            children = tagService.getRootTags(currentUser.get().orElse(null)).stream()
                     .map(t -> (VFSNode) new TagNode(t))
                     .collect(java.util.stream.Collectors.toList());
         } else if (parent instanceof TagNode tn) {
             // Kinder eines TagNode: Sub-Tags
-            children = tagService.getChildren(tn.getTag(), currentUser.require()).stream()
+            children = tagService.getChildren(tn.getTag(), currentUser.get().orElse(null)).stream()
                     .map(t -> (VFSNode) new TagNode(t))
                     .collect(java.util.stream.Collectors.toList());
         } else if (parent.getFileNode() != null) {

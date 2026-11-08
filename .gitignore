@@ -12,3 +12,9 @@
 node_modules/
 src/main/frontend/generated/
 vite.generated.ts
+
+# Lokale H2-Datenbank
+/data/
+
+# Lokale Secrets
+/config/application.properties

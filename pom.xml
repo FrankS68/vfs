@@ -97,6 +97,82 @@
         </plugins>
     </build>
     
+    <profiles>
+        <!--
+            Windows-Desktop-Paket: ./mvnw package -Pdesktop -DskipTests
+            Ergebnis: target/dist/VFS/VFS.exe (mit eigener Java-Laufzeit).
+            Maven muss mit einer Java-Laufzeit ab 21 laufen, die bin/jpackage enthält.
+        -->
+        <profile>
+            <id>desktop</id>
+            <properties>
+                <!-- jpackage verlangt eine rein numerische Version -->
+                <desktop.app-version>1.0.0</desktop.app-version>
+                <desktop.input>${project.build.directory}/jpackage-input</desktop.input>
+                <desktop.dest>${project.build.directory}/dist</desktop.dest>
+                <!--
+                    Laufzeit, die komplett in das Paket kopiert wird (kein jlink).
+                    Standard: die Java-Laufzeit, mit der Maven läuft — auch eine
+                    JRE ohne jmods wie Eclipses JustJ. Überschreiben mit
+                    -Ddesktop.runtime-image=C:\pfad\zur\jre
+                -->
+                <desktop.runtime-image>${java.home}</desktop.runtime-image>
+            </properties>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-antrun-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>jpackage</id>
+                                <!-- läuft nach spring-boot:repackage (gleiche Phase, später deklariert) -->
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>run</goal>
+                                </goals>
+                                <configuration>
+                                    <target>
+                                        <delete dir="${desktop.input}"/>
+                                        <delete dir="${desktop.dest}/VFS"/>
+                                        <copy file="${project.build.directory}/${project.build.finalName}.jar"
+                                              todir="${desktop.input}"/>
+                                        <exec executable="${java.home}/bin/jpackage" failonerror="true">
+                                            <arg value="--type"/>
+                                            <arg value="app-image"/>
+                                            <arg value="--name"/>
+                                            <arg value="VFS"/>
+                                            <arg value="--app-version"/>
+                                            <arg value="${desktop.app-version}"/>
+                                            <arg value="--vendor"/>
+                                            <arg value="segieth consulting"/>
+                                            <arg value="--input"/>
+                                            <arg value="${desktop.input}"/>
+                                            <arg value="--main-jar"/>
+                                            <arg value="${project.build.finalName}.jar"/>
+                                            <arg value="--runtime-image"/>
+                                            <arg value="${desktop.runtime-image}"/>
+                                            <arg value="--dest"/>
+                                            <arg value="${desktop.dest}"/>
+                                            <!-- Konsolenfenster mit Log; Schließen beendet VFS -->
+                                            <arg value="--win-console"/>
+                                            <arg value="--arguments"/>
+                                            <arg value="--spring.profiles.active=desktop"/>
+                                        </exec>
+                                        <!-- jpackage legt VFS.exe schreibgeschützt an; sonst scheitert das nächste clean -->
+                                        <attrib readonly="false">
+                                            <fileset dir="${desktop.dest}/VFS"/>
+                                        </attrib>
+                                    </target>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+
     <repositories>
         <repository>
             <id>central</id>

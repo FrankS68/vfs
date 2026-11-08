@@ -28,11 +28,11 @@ import com.vaadin.flow.theme.lumo.LumoUtility;
 
 import consulting.segieth.vfs.domain.ImageFile;
 import consulting.segieth.vfs.service.ImageService;
-import jakarta.annotation.security.PermitAll;
+import com.vaadin.flow.server.auth.AnonymousAllowed;
 
 @Route("imagelist")
 @PageTitle("Image List")
-@PermitAll // When security is enabled, allow all authenticated users
+@AnonymousAllowed // lesen ohne Anmeldung, ändernde Aktionen nur angemeldet
 public class ImageListView extends VerticalLayout {
 
 	private final ImageService service;

@@ -74,6 +74,34 @@ If you use commercial components, pass the license key as a build secret:
 docker build --secret id=proKey,src=$HOME/.vaadin/proKey .
 ```
 
+## Windows-Paket (VFS.exe)
+
+```bash
+./mvnw clean package -Pdesktop -DskipTests
+```
+
+Ergebnis ist der Ordner `target/dist/VFS/` mit `VFS.exe` und eigener Java-Laufzeit.
+Auf dem Zielrechner muss kein Java installiert sein; der ganze Ordner wird kopiert.
+
+Als Laufzeit wird die Java-Installation, mit der Maven läuft, komplett ins Paket kopiert
+(auch eine JRE ohne `jmods` wie Eclipses JustJ). Eine andere Laufzeit ab Java 21 wählt
+man mit `-Ddesktop.runtime-image=C:\pfad\zur\jre`.
+
+Beim Start öffnet VFS ein Konsolenfenster mit dem Log und danach den Browser auf
+`http://localhost:8080/`. Wer das Konsolenfenster schließt, beendet VFS. Ein zweiter
+Start öffnet nur den Browser zur laufenden Instanz.
+
+Die EXE nutzt das Spring-Profil `desktop` mit festen Pfaden unter `%USERPROFILE%\.vfs`:
+
+| Was | Pfad |
+|---|---|
+| Datenbank | `.vfs\data\mydb.mv.db` |
+| OAuth-Secrets | `.vfs\config\application.properties` (Vorlage: `config/application.properties.example`) |
+| Log | `.vfs\logs\vfs.log` |
+
+Ohne die Secrets-Datei startet VFS nicht, weil mindestens ein OAuth-Provider aktiv sein muss.
+Die Callback-URLs der Provider müssen `http://localhost:8080/...` erlauben.
+
 ## Next Steps
 
 The [Building Apps](https://vaadin.com/docs/v25/building-apps) guides contain hands-on advice for adding features to 

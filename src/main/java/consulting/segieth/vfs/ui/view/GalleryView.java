@@ -46,11 +46,11 @@ import consulting.segieth.vfs.service.TagService;
 import consulting.segieth.vfs.service.TreeService;
 import de.witchcafe.auth.AppUserInfo;
 import de.witchcafe.auth.CurrentUser;
-import jakarta.annotation.security.PermitAll;
+import com.vaadin.flow.server.auth.AnonymousAllowed;
 
 @Route("gallery")
 @PageTitle("Gallery")
-@PermitAll
+@AnonymousAllowed // lesen ohne Anmeldung, ändernde Aktionen nur angemeldet
 public class GalleryView extends VerticalLayout implements BeforeEnterObserver {
 
     private static final int PAGE_SIZE = 20;
@@ -58,6 +58,8 @@ public class GalleryView extends VerticalLayout implements BeforeEnterObserver {
     private final ImageService service;
     private final TagService tagService;
     private final CurrentUser currentUser;
+    /** Ohne Anmeldung nur ansehen: Taggen und Verschieben werden nicht angezeigt */
+    private final boolean canEdit;
     private final MoveService moveService;
     private final TreeService treeService;
     private final TagRepository tagRepository;
@@ -116,7 +118,8 @@ public class GalleryView extends VerticalLayout implements BeforeEnterObserver {
             idsFilter = null;
             folderBanner.setText("Ordner: " + folderFilter);
             folderBanner.setVisible(true);
-        } else if (params.containsKey("tag") && !params.get("tag").isEmpty()) {
+        } else if (params.containsKey("tag") && !params.get("tag").isEmpty()
+                && isVisibleTag(Long.parseLong(params.get("tag").get(0)))) {
             tagFilter = Long.parseLong(params.get("tag").get(0));
             folderFilter = null;
             idsFilter = null;
@@ -139,6 +142,7 @@ public class GalleryView extends VerticalLayout implements BeforeEnterObserver {
         this.service = service;
         this.tagService = tagService;
         this.currentUser = currentUser;
+        this.canEdit = currentUser.get().isPresent();
         this.moveService = moveService;
         this.treeService = treeService;
         this.tagRepository = tagRepository;
@@ -187,6 +191,8 @@ public class GalleryView extends VerticalLayout implements BeforeEnterObserver {
 
         Button moveSelectedBtn = new Button("📁 Verschieben", e -> moveSelected());
         moveSelectedBtn.addThemeVariants(ButtonVariant.LUMO_SMALL);
+        tagSelectedBtn.setVisible(canEdit);
+        moveSelectedBtn.setVisible(canEdit);
 
         Button clearSelectionBtn = new Button("✕ Auswahl aufheben", e -> clearSelection());
         clearSelectionBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY, ButtonVariant.LUMO_SMALL);
@@ -359,8 +365,17 @@ public class GalleryView extends VerticalLayout implements BeforeEnterObserver {
         img.addClickListener(e -> showImageDialog(image, getCurrentImages()));
         label.addClickListener(e -> showImageDialog(image, getCurrentImages()));
 
+        tagBtn.setVisible(canEdit);
         card.add(selectCb, tagBtn, img, label);
         return card;
+    }
+
+    /** Private Tags nur für ihren Besitzer — sonst wird der Tag-Filter aus der URL ignoriert */
+    private boolean isVisibleTag(Long tagId) {
+        String userId = currentUser.get().map(u -> u.getUserId().toString()).orElse(null);
+        return tagRepository.findById(tagId)
+                .map(t -> t.isPublic() || (userId != null && userId.equals(t.getOwnerUserId())))
+                .orElse(false);
     }
 
     private void updateSelectionBar() {
@@ -510,8 +525,8 @@ public class GalleryView extends VerticalLayout implements BeforeEnterObserver {
 
             // Tags
             tagRow.removeAll();
-            AppUserInfo user = currentUser.require();
-            tagService.getTagsForNode(current).forEach(tag -> {
+            AppUserInfo user = currentUser.get().orElse(null);
+            tagService.getVisibleTagsForNode(current, user).forEach(tag -> {
                 Span chip = new Span(tag.getFullPath());
                 chip.getStyle()
                         .set("background", "var(--lumo-primary-color-10pct)")
@@ -525,7 +540,7 @@ public class GalleryView extends VerticalLayout implements BeforeEnterObserver {
             Button editTagsBtn = new Button("🏷 Tags bearbeiten", ev ->
                 new TagDialog(List.<consulting.segieth.vfs.domain.FileNode>of(finalCurrent), tagService, user, () -> {}).open());
             editTagsBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY, ButtonVariant.LUMO_SMALL);
-            tagRow.add(editTagsBtn);
+            if (canEdit) tagRow.add(editTagsBtn);
 
             // Navigation zu nächster Seite wenn am Ende
             if (currentIdx[0] == images.size() - 1 && hasMore) {
